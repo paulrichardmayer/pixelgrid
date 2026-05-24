@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chromatic Pattern Engine</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <aside class="panel">
+      <header class="panel-header">
+        <h1>Chromatic <span>Pattern Engine</span></h1>
+        <p class="tag">generative pixel-grid sketchbook</p>
+      </header>
+
+      <section class="group">
+        <div class="group-head">
+          <h2>Palette</h2>
+          <button id="addColor" class="ghost" title="Add color">+ add</button>
+        </div>
+        <div id="palette" class="palette"></div>
+      </section>
+
+      <section class="group">
+        <div class="group-head">
+          <h2>Grid size</h2>
+          <span id="gridLabel" class="value">24 px</span>
+        </div>
+        <input type="range" id="gridSize" min="4" max="64" value="24" step="1" />
+      </section>
+
+      <section class="group">
+        <div class="group-head">
+          <h2>Style</h2>
+        </div>
+        <select id="style">
+          <option value="noise">Noise</option>
+          <option value="checker">Checkerboard</option>
+          <option value="diagonal">Diagonal Stripes</option>
+          <option value="mosaic">Mosaic</option>
+          <option value="scattered">Scattered</option>
+          <option value="wave">Wave</option>
+        </select>
+      </section>
+
+      <section class="group">
+        <div class="group-head">
+          <h2>Seed</h2>
+        </div>
+        <div class="seed-row">
+          <input type="text" id="seed" inputmode="numeric" />
+          <button id="randomizeSeed" class="ghost icon" title="Randomize seed">⟳</button>
+          <button id="copySeed" class="ghost" title="Copy seed">copy</button>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="generate" class="primary">Generate <kbd>Space</kbd></button>
+        <div class="action-row">
+          <button id="favorite" class="secondary" title="Save to favorites (S)">★ Save <kbd>S</kbd></button>
+          <button id="export" class="secondary">Export PNG</button>
+        </div>
+        <div class="action-row">
+          <button id="copyConfig" class="secondary">Copy config</button>
+          <button id="pasteConfig" class="secondary">Paste config</button>
+        </div>
+        <div id="configMsg" class="config-msg" aria-live="polite"></div>
+      </section>
+
+      <footer class="foot">
+        <span>Space to regenerate · paste a seed to reproduce</span>
+      </footer>
+    </aside>
+
+    <section class="stage">
+      <div class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+      </div>
+      <div class="shelf">
+        <div class="shelf-head">
+          <h2>Favorites <span id="favCount" class="value">0 / 24</span></h2>
+          <button id="clearFavs" class="ghost" title="Clear all favorites">clear</button>
+        </div>
+        <div id="favorites" class="favorites">
+          <div class="shelf-empty">No favorites yet — press <kbd>S</kbd> to save the current pattern.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
