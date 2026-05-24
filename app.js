@@ -4,12 +4,14 @@
 // ============ Config contract ============
 // The shareable pattern config is a JSON object with this exact shape:
 //   {
-//     "version": 1,
-//     "seed":     <unsigned 32-bit integer>,
-//     "gridSize": <integer, 4..64>,
-//     "style":    "noise" | "checker" | "diagonal" | "mosaic" | "scattered" | "wave",
-//     "palette":  [ { "color": "#rrggbb", "influence": 0..100 }, ... ]   // 1..6 entries
+//     "version":   1,
+//     "seed":      <unsigned 32-bit integer>,
+//     "gridSize":  <integer, 4..64>,
+//     "style":     "noise" | "checker" | "diagonal" | "mosaic" | "scattered" | "wave",
+//     "tileShape": "square" | "circle" | "triangle" | "diamond" | "hexagon",
+//     "palette":   [ { "color": "#rrggbb", "influence": 0..100 }, ... ]   // 1..6 entries
 //   }
+// tileShape is optional — missing values default to "square" (backwards-compatible).
 // Anything outside that shape is rejected by loadConfig().
 // Favorites stored in localStorage are an array of:
 //   { "id": <ms timestamp>, "thumb": "data:image/png;...", "config": <config-object> }
@@ -24,6 +26,7 @@ const DEFAULT_PALETTE = [
 ];
 
 const STYLE_NAMES = ['noise', 'checker', 'diagonal', 'mosaic', 'scattered', 'wave'];
+const SHAPE_NAMES = ['square', 'circle', 'triangle', 'diamond', 'hexagon'];
 const FAV_CAP = 24;
 const FAV_KEY = 'pixelgrid.favorites.v1';
 
@@ -31,6 +34,7 @@ const state = {
   palette: DEFAULT_PALETTE.map(p => ({ ...p })),
   gridSize: 24,
   style: 'noise',
+  tileShape: 'square',
   seed: randomSeed(),
 };
 
@@ -71,18 +75,85 @@ function makeColorPicker(palette, rand) {
   };
 }
 
+// ---------- Tile shapes ----------
+// Each draw fn: (ctx, px, py, size, col, row) => void
+// ctx.fillStyle must be set by caller before calling.
+// For hex, px/py are the CENTER of the hex cell; size is the circumradius.
+const TILE_SHAPES = {
+  square(ctx, px, py, size) {
+    ctx.fillRect(px, py, size, size);
+  },
+  circle(ctx, px, py, size) {
+    const r = size / 2;
+    ctx.beginPath();
+    ctx.arc(px + r, py + r, r, 0, Math.PI * 2);
+    ctx.fill();
+  },
+  // Alternating up/down triangles — perfectly tile the grid with no gaps.
+  triangle(ctx, px, py, size, col, row) {
+    ctx.beginPath();
+    if ((col + row) % 2 === 0) {
+      ctx.moveTo(px + size / 2, py);
+      ctx.lineTo(px + size, py + size);
+      ctx.lineTo(px, py + size);
+    } else {
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + size, py);
+      ctx.lineTo(px + size / 2, py + size);
+    }
+    ctx.closePath();
+    ctx.fill();
+  },
+  diamond(ctx, px, py, size) {
+    const cx = px + size / 2, cy = py + size / 2, r = size / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + r, cy);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - r, cy);
+    ctx.closePath();
+    ctx.fill();
+  },
+  // Pointy-top hexagon centered at (px, py) with circumradius size.
+  hexagon(ctx, px, py, size) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 6;
+      const x = px + size * Math.cos(angle);
+      const y = py + size * Math.sin(angle);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+  },
+};
+
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 const paletteEl = $('palette');
 const gridSizeEl = $('gridSize');
 const gridLabelEl = $('gridLabel');
 const styleEl = $('style');
+const tileShapeEl = $('tileShape');
 const seedEl = $('seed');
 const canvas = $('canvas');
 const ctx = canvas.getContext('2d');
 const favoritesEl = $('favorites');
 const favCountEl = $('favCount');
 const configMsgEl = $('configMsg');
+
+// ---- Diagnostic logging (session 3 debug) ----
+console.log('[pixelgrid] boot — DOM lookups:', {
+  palette: !!paletteEl,
+  gridSize: !!gridSizeEl,
+  style: !!styleEl,
+  seed: !!seedEl,
+  canvas: !!canvas,
+  ctx: !!ctx,
+  favorites: !!favoritesEl,
+  addColorBtn: !!$('addColor'),
+  generateBtn: !!$('generate'),
+});
 
 // ---------- Palette UI ----------
 function renderPalette() {
@@ -135,54 +206,57 @@ function renderPalette() {
 }
 
 $('addColor').addEventListener('click', () => {
-  if (state.palette.length >= 6) return;
+  console.log('[pixelgrid] addColor click — palette before:', JSON.parse(JSON.stringify(state.palette)));
+  if (state.palette.length >= 6) {
+    console.log('[pixelgrid] addColor blocked — palette already at cap (6)');
+    return;
+  }
   const fresh = `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
   state.palette.push({ color: fresh, influence: 50 });
+  console.log('[pixelgrid] addColor — palette after:', JSON.parse(JSON.stringify(state.palette)));
   renderPalette();
   generate();
 });
 
 // ---------- Style algorithms ----------
-// Each style: (ctx, cols, rows, tile, pick, rand) => void
+// Each style: (ctx, cols, rows, tile, pick, rand, drawTile) => void
 // pick() returns a weighted color. rand() returns 0..1 deterministically.
+// drawTile(ctx, col, row, color) draws one tile at grid position (col, row)
+// using the active shape — callers must not call fillRect directly.
 const STYLES = {
   // Noise — pure weighted random per tile
-  noise(ctx, cols, rows, tile, pick) {
+  noise(ctx, cols, rows, tile, pick, rand, drawTile) {
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        ctx.fillStyle = pick();
-        ctx.fillRect(x * tile, y * tile, tile, tile);
+        drawTile(ctx, x, y, pick());
       }
     }
   },
 
   // Checkerboard — A/B parity rhythm with weighted picks per parity
-  checker(ctx, cols, rows, tile, pick) {
+  checker(ctx, cols, rows, tile, pick, rand, drawTile) {
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        const parity = (x + y) % 2 === 0;
-        ctx.fillStyle = parity ? pick() : pick();
-        ctx.fillRect(x * tile, y * tile, tile, tile);
+        drawTile(ctx, x, y, pick());
       }
     }
   },
 
   // Diagonal stripes — colors bucketed by diagonal index
-  diagonal(ctx, cols, rows, tile, pick, rand) {
+  diagonal(ctx, cols, rows, tile, pick, rand, drawTile) {
     const bandWidth = Math.max(1, Math.floor(2 + rand() * 4));
     const bands = new Map();
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const band = Math.floor((x + y) / bandWidth);
         if (!bands.has(band)) bands.set(band, pick());
-        ctx.fillStyle = bands.get(band);
-        ctx.fillRect(x * tile, y * tile, tile, tile);
+        drawTile(ctx, x, y, bands.get(band));
       }
     }
   },
 
   // Mosaic — Voronoi-ish clusters (manhattan distance to seed points)
-  mosaic(ctx, cols, rows, tile, pick, rand) {
+  mosaic(ctx, cols, rows, tile, pick, rand, drawTile) {
     const grid = Array.from({ length: rows }, () => new Array(cols).fill(null));
     const seedsCount = Math.max(4, Math.floor((cols * rows) / 14));
     const seeds = [];
@@ -206,32 +280,31 @@ const STYLES = {
     }
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        ctx.fillStyle = grid[y][x];
-        ctx.fillRect(x * tile, y * tile, tile, tile);
+        drawTile(ctx, x, y, grid[y][x]);
       }
     }
   },
 
   // Scattered — dominant color fills background; accents sprinkled by density
-  scattered(ctx, cols, rows, tile, pick, rand) {
+  scattered(ctx, cols, rows, tile, pick, rand, drawTile) {
     const bg = [...state.palette].sort((a, b) => b.influence - a.influence)[0]?.color ?? '#000';
+    // Full canvas fill for background — intentionally uses fillRect, not drawTile.
     ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, cols * tile, rows * tile);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     const density = 0.35;
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         if (rand() < density) {
           const c = pick();
           if (c === bg) continue;
-          ctx.fillStyle = c;
-          ctx.fillRect(x * tile, y * tile, tile, tile);
+          drawTile(ctx, x, y, c);
         }
       }
     }
   },
 
   // Wave — sinusoidal row bands with a small ordered palette
-  wave(ctx, cols, rows, tile, pick, rand) {
+  wave(ctx, cols, rows, tile, pick, rand, drawTile) {
     const freq = 0.08 + rand() * 0.15;
     const phase = rand() * Math.PI * 2;
     const amp = 2 + rand() * 4;
@@ -241,8 +314,7 @@ const STYLES = {
       for (let x = 0; x < cols; x++) {
         const offset = Math.sin(x * freq + phase) * amp;
         const band = Math.floor(Math.abs(y + offset)) % bandCount;
-        ctx.fillStyle = bandColors[band];
-        ctx.fillRect(x * tile, y * tile, tile, tile);
+        drawTile(ctx, x, y, bandColors[band]);
       }
     }
   },
@@ -252,21 +324,59 @@ const STYLES = {
 function generate() {
   fitCanvas();
   const tile = state.gridSize;
-  const cols = Math.floor(canvas.width / tile);
-  const rows = Math.floor(canvas.height / tile);
+  const shape = state.tileShape;
+
+  let cols, rows, drawTile;
+
+  if (shape === 'hexagon') {
+    // Pointy-top hex grid layout.
+    // r = circumradius (tip to center), hexW/H = center-to-center distances.
+    const r = tile / 2;
+    const hexW = Math.sqrt(3) * r;
+    const hexH = 1.5 * tile;
+    cols = Math.ceil(canvas.width / hexW) + 1;
+    rows = Math.ceil(canvas.height / hexH) + 1;
+    drawTile = (ctx, col, row, color) => {
+      const cx = col * hexW + (row % 2 === 1 ? hexW / 2 : 0) + hexW / 2;
+      const cy = row * hexH * 0.75 + r;
+      ctx.fillStyle = color;
+      TILE_SHAPES.hexagon(ctx, cx, cy, r);
+    };
+  } else {
+    cols = Math.floor(canvas.width / tile);
+    rows = Math.floor(canvas.height / tile);
+    const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
+    drawTile = (ctx, col, row, color) => {
+      ctx.fillStyle = color;
+      shapeFn(ctx, col * tile, row * tile, tile, col, row);
+    };
+  }
+
+  console.log('[pixelgrid] generate — canvas:', canvas.width, 'x', canvas.height,
+    '| shape:', shape, '| tile:', tile, '| cols×rows:', cols, '×', rows,
+    '| style:', state.style, '| seed:', state.seed,
+    '| palette size:', state.palette.length);
+
+  if (cols === 0 || rows === 0) {
+    console.warn('[pixelgrid] generate aborted — canvas has zero rows or cols.');
+    return;
+  }
+  if (state.palette.length === 0) {
+    console.warn('[pixelgrid] generate aborted — palette is empty.');
+    return;
+  }
 
   const rand = mulberry32(state.seed);
   const pick = makeColorPicker(state.palette, rand);
   const fn = STYLES[state.style] ?? STYLES.noise;
 
-  // Hard clear before drawing — prevents leftover pixels from prior renders
-  // when the canvas was larger or used a different background.
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = state.palette[0]?.color ?? '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  fn(ctx, cols, rows, tile, pick, rand);
+  fn(ctx, cols, rows, tile, pick, rand, drawTile);
   seedEl.value = String(state.seed);
+  console.log('[pixelgrid] generate complete — drew', cols * rows, 'tiles');
 }
 
 function fitCanvas() {
@@ -287,6 +397,11 @@ gridSizeEl.addEventListener('change', generate);
 
 styleEl.addEventListener('change', e => {
   state.style = e.target.value;
+  generate();
+});
+
+tileShapeEl.addEventListener('change', e => {
+  state.tileShape = e.target.value;
   generate();
 });
 
@@ -311,6 +426,7 @@ $('randomizeSeed').addEventListener('click', () => {
 });
 
 $('generate').addEventListener('click', () => {
+  console.log('[pixelgrid] generate button clicked');
   state.seed = randomSeed();
   generate();
 });
@@ -348,6 +464,7 @@ function getConfig() {
     seed: state.seed,
     gridSize: state.gridSize,
     style: state.style,
+    tileShape: state.tileShape,
     palette: state.palette.map(p => ({ color: p.color, influence: p.influence })),
   };
 }
@@ -368,12 +485,15 @@ function loadConfig(cfg) {
   state.seed = cfg.seed >>> 0;
   state.gridSize = cfg.gridSize;
   state.style = cfg.style;
+  // tileShape is optional — old configs without it default to 'square'.
+  state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
   state.palette = cfg.palette.map(p => ({ color: p.color, influence: p.influence }));
 
   // Sync UI controls
   gridSizeEl.value = String(state.gridSize);
   gridLabelEl.textContent = `${state.gridSize} px`;
   styleEl.value = state.style;
+  tileShapeEl.value = state.tileShape;
   seedEl.value = String(state.seed);
   renderPalette();
   generate();
