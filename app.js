@@ -218,105 +218,222 @@ $('addColor').addEventListener('click', () => {
   generate();
 });
 
-// ---------- Style algorithms ----------
-// Each style: (ctx, cols, rows, tile, pick, rand, drawTile) => void
-// pick() returns a weighted color. rand() returns 0..1 deterministically.
-// drawTile(ctx, col, row, color) draws one tile at grid position (col, row)
-// using the active shape — callers must not call fillRect directly.
-const STYLES = {
-  // Noise — pure weighted random per tile
-  noise(ctx, cols, rows, tile, pick, rand, drawTile) {
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        drawTile(ctx, x, y, pick());
-      }
-    }
-  },
+// ---------- Motif builders ----------
+// Each motif builder: (dim, palette, rand) => 2D array (dim × dim) of palette indices.
+// The motif is the small repeating unit — generate() tiles it across the whole canvas.
+// Every motif MUST tile seamlessly at its boundary (cell (0,0) sits next to cell (dim-1, dim-1)
+// of the neighbor tile). Pattern motifs achieve this by keeping the figure centered with
+// background cells along the edges; ratio-based motifs (diagonal, checker) use modular math.
 
-  // Checkerboard — A/B parity rhythm with weighted picks per parity
-  checker(ctx, cols, rows, tile, pick, rand, drawTile) {
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        drawTile(ctx, x, y, pick());
-      }
-    }
-  },
+const MOTIF_DIM = 16;
 
-  // Diagonal stripes — colors bucketed by diagonal index
-  diagonal(ctx, cols, rows, tile, pick, rand, drawTile) {
-    const bandWidth = Math.max(1, Math.floor(2 + rand() * 4));
-    const bands = new Map();
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const band = Math.floor((x + y) / bandWidth);
-        if (!bands.has(band)) bands.set(band, pick());
-        drawTile(ctx, x, y, bands.get(band));
-      }
-    }
-  },
+function make2D(dim) {
+  return Array.from({ length: dim }, () => new Array(dim).fill(0));
+}
 
-  // Mosaic — Voronoi-ish clusters (manhattan distance to seed points)
-  mosaic(ctx, cols, rows, tile, pick, rand, drawTile) {
-    const grid = Array.from({ length: rows }, () => new Array(cols).fill(null));
-    const seedsCount = Math.max(4, Math.floor((cols * rows) / 14));
-    const seeds = [];
-    for (let i = 0; i < seedsCount; i++) {
-      seeds.push({
-        x: Math.floor(rand() * cols),
-        y: Math.floor(rand() * rows),
-        color: pick(),
-      });
-    }
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        let best = 0, bestD = Infinity;
-        for (let i = 0; i < seeds.length; i++) {
-          const s = seeds[i];
-          const d = Math.abs(s.x - x) + Math.abs(s.y - y);
-          if (d < bestD) { bestD = d; best = i; }
-        }
-        grid[y][x] = seeds[best].color;
-      }
-    }
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        drawTile(ctx, x, y, grid[y][x]);
-      }
-    }
-  },
+function bgIndex(palette) {
+  let best = 0, bestW = -1;
+  for (let i = 0; i < palette.length; i++) {
+    if (palette[i].influence > bestW) { bestW = palette[i].influence; best = i; }
+  }
+  return best;
+}
 
-  // Scattered — dominant color fills background; accents sprinkled by density
-  scattered(ctx, cols, rows, tile, pick, rand, drawTile) {
-    const bg = [...state.palette].sort((a, b) => b.influence - a.influence)[0]?.color ?? '#000';
-    // Full canvas fill for background — intentionally uses fillRect, not drawTile.
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const density = 0.35;
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        if (rand() < density) {
-          const c = pick();
-          if (c === bg) continue;
-          drawTile(ctx, x, y, c);
-        }
-      }
-    }
-  },
+function accentIndices(palette, bg) {
+  return palette
+    .map((p, i) => ({ i, w: p.influence }))
+    .filter(p => p.i !== bg && p.w > 0)
+    .sort((a, b) => b.w - a.w)
+    .map(p => p.i);
+}
 
-  // Wave — sinusoidal row bands with a small ordered palette
-  wave(ctx, cols, rows, tile, pick, rand, drawTile) {
-    const freq = 0.08 + rand() * 0.15;
+// Distribute palette indices into N slots, counts proportional to influence (largest
+// remainder), then interleaved so the same color isn't adjacent when possible.
+function proportionalSlots(palette, n) {
+  const total = palette.reduce((s, p) => s + p.influence, 0);
+  if (total === 0) return new Array(n).fill(0);
+  const exact = palette.map(p => (p.influence / total) * n);
+  const counts = exact.map(v => Math.floor(v));
+  let used = counts.reduce((s, v) => s + v, 0);
+  const rem = exact.map((v, i) => ({ i, r: v - counts[i] })).sort((a, b) => b.r - a.r);
+  let k = 0;
+  while (used < n) { counts[rem[k % rem.length].i]++; used++; k++; }
+
+  const buckets = palette.map((_, i) => ({ i, left: counts[i] }));
+  const slots = new Array(n);
+  let last = -1;
+  for (let s = 0; s < n; s++) {
+    buckets.sort((a, b) => b.left - a.left);
+    let chosen = buckets.find(b => b.left > 0 && b.i !== last) || buckets.find(b => b.left > 0);
+    slots[s] = chosen.i;
+    chosen.left--;
+    last = chosen.i;
+  }
+  return slots;
+}
+
+const MOTIFS = {
+  // "noise" slot → organic blob centered in motif.
+  // Edges stay bg so the motif tiles cleanly; blob has a polar-sinusoid wobble.
+  noise(dim, palette, rand) {
+    const m = make2D(dim);
+    const bg = bgIndex(palette);
+    const acc = accentIndices(palette, bg);
+    const main = acc[0] ?? bg;
+    const outline = acc[1] ?? main;
+
+    for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
+
+    const c = (dim - 1) / 2;
+    const baseR = dim * 0.30;
+    const lobes = 3 + Math.floor(rand() * 4);
     const phase = rand() * Math.PI * 2;
-    const amp = 2 + rand() * 4;
-    const bandCount = Math.max(2, Math.min(state.palette.length, 5));
-    const bandColors = Array.from({ length: bandCount }, () => pick());
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const offset = Math.sin(x * freq + phase) * amp;
-        const band = Math.floor(Math.abs(y + offset)) % bandCount;
-        drawTile(ctx, x, y, bandColors[band]);
+    const amp = dim * 0.08;
+
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const dx = x - c, dy = y - c;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const angle = Math.atan2(dy, dx);
+        const r = baseR + Math.sin(angle * lobes + phase) * amp;
+        if (d <= r) m[y][x] = main;
+        else if (d <= r + 1.4) m[y][x] = outline;
       }
     }
+    return m;
+  },
+
+  // "checker" slot → block checkerboard using the two highest-influence colors.
+  checker(dim, palette, rand) {
+    const m = make2D(dim);
+    const choices = [1, 2, 4, 8].filter(b => dim % (b * 2) === 0);
+    const block = choices[Math.floor(rand() * choices.length)] || 1;
+    const sorted = palette.map((p, i) => ({ i, w: p.influence })).sort((a, b) => b.w - a.w);
+    const c0 = sorted[0]?.i ?? 0;
+    const c1 = sorted[1]?.i ?? c0;
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const bx = Math.floor(x / block);
+        const by = Math.floor(y / block);
+        m[y][x] = (bx + by) % 2 === 0 ? c0 : c1;
+      }
+    }
+    return m;
+  },
+
+  // "diagonal" slot → 45° stripes. (x+y) % dim guarantees seamless wrap.
+  diagonal(dim, palette, rand) {
+    const m = make2D(dim);
+    const widthChoices = [1, 2, 4].filter(b => dim % b === 0);
+    const width = widthChoices[Math.floor(rand() * widthChoices.length)] || 1;
+    const numBands = dim / width;
+    const slots = proportionalSlots(palette, numBands);
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const band = Math.floor(((x + y) % dim) / width);
+        m[y][x] = slots[band];
+      }
+    }
+    return m;
+  },
+
+  // "mosaic" slot → plus/cross. Arms stop short of the motif edge so neighbors don't fuse.
+  mosaic(dim, palette, rand) {
+    const m = make2D(dim);
+    const bg = bgIndex(palette);
+    const acc = accentIndices(palette, bg);
+    const fg = acc[0] ?? bg;
+    const tip = acc[1] ?? fg;
+    for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
+
+    const c = dim / 2;
+    const thickness = Math.max(2, Math.round(dim * 0.28));
+    const halfLen = Math.max(thickness + 1, Math.round(dim * 0.38));
+    const t0 = Math.floor(c - thickness / 2);
+    const t1 = t0 + thickness;
+    const aL = Math.floor(c - halfLen);
+    const aR = Math.floor(c + halfLen);
+
+    for (let y = t0; y < t1; y++) {
+      for (let x = aL; x < aR; x++) {
+        if (x >= 0 && y >= 0 && x < dim && y < dim) m[y][x] = fg;
+      }
+    }
+    for (let x = t0; x < t1; x++) {
+      for (let y = aL; y < aR; y++) {
+        if (x >= 0 && y >= 0 && x < dim && y < dim) m[y][x] = fg;
+      }
+    }
+    if (tip !== fg) {
+      for (let x = t0; x < t1; x++) {
+        if (x >= 0 && x < dim && aL >= 0 && aL < dim) m[aL][x] = tip;
+        if (x >= 0 && x < dim && aR - 1 >= 0 && aR - 1 < dim) m[aR - 1][x] = tip;
+      }
+      for (let y = t0; y < t1; y++) {
+        if (y >= 0 && y < dim && aL >= 0 && aL < dim) m[y][aL] = tip;
+        if (y >= 0 && y < dim && aR - 1 >= 0 && aR - 1 < dim) m[y][aR - 1] = tip;
+      }
+    }
+    return m;
+  },
+
+  // "scattered" slot → bg fill with accent cells spaced apart (toroidal distance for wrap).
+  scattered(dim, palette, rand) {
+    const m = make2D(dim);
+    const bg = bgIndex(palette);
+    const acc = accentIndices(palette, bg);
+    for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
+    if (acc.length === 0) return m;
+
+    const accW = acc.reduce((s, i) => s + palette[i].influence, 0);
+    const bgW = palette[bg].influence + 0.001;
+    const ratio = accW / (accW + bgW);
+    const target = Math.max(1, Math.floor(dim * dim * ratio * 0.6));
+    const minDist = 2;
+    const placed = [];
+    let attempts = 0;
+    while (placed.length < target && attempts++ < target * 30) {
+      const x = Math.floor(rand() * dim);
+      const y = Math.floor(rand() * dim);
+      let ok = true;
+      for (const p of placed) {
+        const dx = Math.min(Math.abs(p.x - x), dim - Math.abs(p.x - x));
+        const dy = Math.min(Math.abs(p.y - y), dim - Math.abs(p.y - y));
+        if (dx < minDist && dy < minDist) { ok = false; break; }
+      }
+      if (!ok) continue;
+      let r = rand() * accW;
+      let chosen = acc[0];
+      for (const i of acc) {
+        r -= palette[i].influence;
+        if (r <= 0) { chosen = i; break; }
+      }
+      m[y][x] = chosen;
+      placed.push({ x, y });
+    }
+    return m;
+  },
+
+  // "wave" slot → concentric diamond rings (manhattan distance from center).
+  // Alternating ring/gap pattern produces the outlined-ring look.
+  wave(dim, palette, rand) {
+    const m = make2D(dim);
+    const bg = bgIndex(palette);
+    const acc = accentIndices(palette, bg);
+    for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
+    if (acc.length === 0) return m;
+
+    const c = (dim - 1) / 2;
+    const maxR = Math.floor(dim * 0.45);
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const d = Math.abs(x - c) + Math.abs(y - c);
+        if (d > maxR) continue;
+        const ring = Math.round(d);
+        if (ring % 2 === 0) m[y][x] = acc[(ring / 2) % acc.length];
+      }
+    }
+    return m;
   },
 };
 
@@ -326,11 +443,19 @@ function generate() {
   const tile = state.gridSize;
   const shape = state.tileShape;
 
-  let cols, rows, drawTile;
+  if (state.palette.length === 0) {
+    console.warn('[pixelgrid] generate aborted — palette is empty.');
+    return;
+  }
 
+  // 1. Build the motif (a small color-index grid that will be tiled).
+  const rand = mulberry32(state.seed);
+  const motifFn = MOTIFS[state.style] ?? MOTIFS.noise;
+  const motif = motifFn(MOTIF_DIM, state.palette, rand);
+
+  // 2. Determine canvas layout — rectangular for most shapes, offset for hex.
+  let cols, rows, drawTile;
   if (shape === 'hexagon') {
-    // Pointy-top hex grid layout.
-    // r = circumradius (tip to center), hexW/H = center-to-center distances.
     const r = tile / 2;
     const hexW = Math.sqrt(3) * r;
     const hexH = 1.5 * tile;
@@ -343,8 +468,8 @@ function generate() {
       TILE_SHAPES.hexagon(ctx, cx, cy, r);
     };
   } else {
-    cols = Math.floor(canvas.width / tile);
-    rows = Math.floor(canvas.height / tile);
+    cols = Math.ceil(canvas.width / tile);
+    rows = Math.ceil(canvas.height / tile);
     const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
     drawTile = (ctx, col, row, color) => {
       ctx.fillStyle = color;
@@ -352,40 +477,30 @@ function generate() {
     };
   }
 
-  console.log('[pixelgrid] generate — canvas:', canvas.width, 'x', canvas.height,
-    '| shape:', shape, '| tile:', tile, '| cols×rows:', cols, '×', rows,
-    '| style:', state.style, '| seed:', state.seed,
-    '| palette size:', state.palette.length);
-
-  if (cols === 0 || rows === 0) {
-    console.warn('[pixelgrid] generate aborted — canvas has zero rows or cols.');
-    return;
-  }
-  if (state.palette.length === 0) {
-    console.warn('[pixelgrid] generate aborted — palette is empty.');
-    return;
-  }
-
-  const rand = mulberry32(state.seed);
-  const pick = makeColorPicker(state.palette, rand);
-  const fn = STYLES[state.style] ?? STYLES.noise;
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = state.palette[0]?.color ?? '#000';
+  // 3. Fill canvas with bg color first (covers edges + any non-square shape gaps).
+  const bgColor = state.palette[bgIndex(state.palette)].color;
+  ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  fn(ctx, cols, rows, tile, pick, rand, drawTile);
+  // 4. Tile the motif: each canvas cell samples motif[row % DIM][col % DIM].
+  for (let row = 0; row < rows; row++) {
+    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+    for (let col = 0; col < cols; col++) {
+      const mx = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+      const idx = motif[my][mx];
+      drawTile(ctx, col, row, state.palette[idx].color);
+    }
+  }
+
   seedEl.value = String(state.seed);
-  console.log('[pixelgrid] generate complete — drew', cols * rows, 'tiles');
+  console.log('[pixelgrid] generate — style:', state.style, '| shape:', shape,
+    '| cell:', tile, '| cols×rows:', cols, '×', rows, '| seed:', state.seed);
 }
 
 function fitCanvas() {
   const wrap = canvas.parentElement;
-  const w = wrap.clientWidth;
-  const h = wrap.clientHeight;
-  const tile = state.gridSize;
-  canvas.width = Math.max(tile, Math.floor(w / tile) * tile);
-  canvas.height = Math.max(tile, Math.floor(h / tile) * tile);
+  canvas.width = Math.max(64, wrap.clientWidth);
+  canvas.height = Math.max(64, wrap.clientHeight);
 }
 
 // ---------- Wire controls ----------
