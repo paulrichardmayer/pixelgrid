@@ -267,6 +267,118 @@ function _harmonyColors(baseHex, rule) {
   return [baseHex, ...accents];
 }
 
+// ---------- From-Image mode ----------
+// Extract 4–6 dominant colors from an image via k-means in linear-RGB space.
+// Linear RGB instead of sRGB so big bright regions don't overweight by gamma.
+async function extractPaletteFromImage(fileOrImage, k = 5) {
+  const img = (fileOrImage instanceof HTMLImageElement)
+    ? fileOrImage
+    : await _loadImage(fileOrImage);
+  if (!img) return null;
+
+  // Downscale to ≤120×120 for speed; quality is more than enough for clustering.
+  const maxDim = 120;
+  const scale = Math.min(1, maxDim / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+  const w = Math.max(1, Math.round((img.naturalWidth  || img.width)  * scale));
+  const h = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+  const cnv = document.createElement('canvas');
+  cnv.width = w; cnv.height = h;
+  const cx = cnv.getContext('2d');
+  cx.drawImage(img, 0, 0, w, h);
+
+  let data;
+  try {
+    data = cx.getImageData(0, 0, w, h).data;
+  } catch (e) {
+    // Tainted canvas (cross-origin image with no CORS) — can't read pixels.
+    return null;
+  }
+
+  // Collect samples in linear RGB, skipping near-transparent pixels.
+  const samples = [];
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 200) continue;
+    samples.push([
+      srgbToLinear(data[i]     / 255),
+      srgbToLinear(data[i + 1] / 255),
+      srgbToLinear(data[i + 2] / 255),
+    ]);
+  }
+  if (samples.length === 0) return null;
+
+  // 5 candidate runs of k-means with different random seeds; pick best score.
+  let best = null, bestScore = -Infinity;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const centroids = _kmeans(samples, k, 12);
+    if (!centroids) continue;
+    const hexes = centroids.map(c =>
+      rgbToHex(linearToSrgb(c[0]), linearToSrgb(c[1]), linearToSrgb(c[2]))
+    );
+    // Sort by lightness so the lightest or darkest can become bg.
+    const sorted = hexes.slice().sort((a, b) => hexToHsl(b).L - hexToHsl(a).L);
+    // Choose bg as whichever extreme is further from 0.5 (more "background-y").
+    const lightL = hexToHsl(sorted[0]).L;
+    const darkL  = hexToHsl(sorted[sorted.length - 1]).L;
+    const bg = (lightL - 0.5) > (0.5 - darkL) ? sorted[0] : sorted[sorted.length - 1];
+    const accents = sorted.filter(c => c !== bg).slice(0, 3);
+    const candidate = [bg, ...accents];
+    const s = scorePalette(candidate);
+    if (s > bestScore) { bestScore = s; best = candidate; }
+  }
+  if (!best) return null;
+  return { bg: best[0], colors: best.slice(1) };
+}
+
+function _loadImage(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+function _kmeans(samples, k, iters) {
+  if (samples.length === 0) return null;
+  // Random init — pick k distinct random samples as starting centroids.
+  const centroids = [];
+  const used = new Set();
+  for (let i = 0; i < k && i < samples.length; i++) {
+    let idx;
+    do { idx = Math.floor(Math.random() * samples.length); } while (used.has(idx));
+    used.add(idx);
+    centroids.push(samples[idx].slice());
+  }
+  while (centroids.length < k) centroids.push(samples[0].slice());
+
+  for (let iter = 0; iter < iters; iter++) {
+    const sums = Array.from({ length: k }, () => [0, 0, 0, 0]); // r, g, b, count
+    for (const s of samples) {
+      let bestI = 0, bestD = Infinity;
+      for (let i = 0; i < k; i++) {
+        const dr = s[0] - centroids[i][0];
+        const dg = s[1] - centroids[i][1];
+        const db = s[2] - centroids[i][2];
+        const d  = dr * dr + dg * dg + db * db;
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      sums[bestI][0] += s[0];
+      sums[bestI][1] += s[1];
+      sums[bestI][2] += s[2];
+      sums[bestI][3] += 1;
+    }
+    for (let i = 0; i < k; i++) {
+      if (sums[i][3] > 0) {
+        centroids[i][0] = sums[i][0] / sums[i][3];
+        centroids[i][1] = sums[i][1] / sums[i][3];
+        centroids[i][2] = sums[i][2] / sums[i][3];
+      }
+    }
+  }
+  return centroids;
+}
+
 function generateHarmonyPalette(baseHex, rule) {
   // Validate base; fall back to a sensible default if missing/malformed.
   const safeBase = /^#[0-9a-fA-F]{6}$/.test(baseHex) ? baseHex : '#3b82f6';
@@ -1355,6 +1467,12 @@ if (paletteModeEl) {
   paletteModeEl.addEventListener('change', e => {
     state.paletteMode = e.target.value;
     applyPaletteModeUI();
+    // If the user picks 'image' and we don't have a cached palette yet,
+    // open the file picker so they can supply one immediately.
+    if (state.paletteMode === 'image' && !state.imagePalette) {
+      const inp = document.getElementById('image-file-input');
+      if (inp) inp.click();
+    }
   });
 }
 if (harmonyRuleEl) {
@@ -1364,6 +1482,54 @@ if (harmonyRuleEl) {
   });
 }
 applyPaletteModeUI();
+
+// ---------- 'From Image' palette source ----------
+// Two intake paths:
+//   (a) clicking randomize while in 'image' mode + no cached palette opens the
+//       hidden file picker.
+//   (b) drag-and-drop an image anywhere on the page at any time → auto-switch
+//       to image mode, extract, apply.
+const imageFileInput = document.getElementById('image-file-input');
+
+async function applyImageFile(file) {
+  if (!file || !file.type.startsWith('image/')) return false;
+  const pal = await extractPaletteFromImage(file, 5);
+  if (!pal) return false;
+  state.imagePalette = pal;
+  state.paletteMode  = 'image';
+  if (paletteModeEl) paletteModeEl.value = 'image';
+  applyPaletteModeUI();
+  // Apply immediately
+  state.bg     = pal.bg;
+  state.colors = pal.colors.slice(0, 3);
+  state.seed   = randomSeed();
+  bgPill.style.background = state.bg;
+  renderSwatches();
+  generate();
+  return true;
+}
+
+if (imageFileInput) {
+  imageFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) await applyImageFile(file);
+    e.target.value = ''; // reset so the same file can be picked again
+  });
+}
+
+// Drag & drop anywhere on the page (only handles image files; other drops pass through).
+window.addEventListener('dragover', e => {
+  if (e.dataTransfer && Array.from(e.dataTransfer.items || []).some(it => it.kind === 'file')) {
+    e.preventDefault();
+  }
+});
+window.addEventListener('drop', async e => {
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) {
+    e.preventDefault();
+    await applyImageFile(file);
+  }
+});
 
 document.getElementById('btn-randomize').addEventListener('click', randomizeAll);
 document.getElementById('btn-generate').addEventListener('click', generateVariation);
