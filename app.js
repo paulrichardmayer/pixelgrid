@@ -189,6 +189,7 @@ const MOTIFS = {
     const bg  = bgIndex(palette);
     const acc = accentIndices(palette, bg);
     if (acc.length === 0) { for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg; return m; }
+    // Field starts as bg (a real palette color, not the canvas underneath).
     for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
     const c = (dim - 1) / 2;
     const baseR = dim * 0.30;
@@ -198,9 +199,14 @@ const MOTIFS = {
     const nZones = acc.length;
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const dx = x - c, dy = y - c;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        const angle = Math.atan2(dy, dx);
+        // Toroidal distance from center so the blob tiles seamlessly when
+        // repeated. The lobe direction (angle) stays non-toroidal to keep
+        // the blob visually directional.
+        const dxR = x - c, dyR = y - c;
+        const tdx = Math.min(Math.abs(dxR), dim - Math.abs(dxR));
+        const tdy = Math.min(Math.abs(dyR), dim - Math.abs(dyR));
+        const d   = Math.sqrt(tdx * tdx + tdy * tdy);
+        const angle = Math.atan2(dyR, dxR);
         const r = baseR + Math.sin(angle * lobes + phase) * wobble;
         if (d > r) continue;
         const zone = Math.min(nZones - 1, Math.floor((1 - d / r) * nZones));
@@ -342,7 +348,10 @@ const MOTIFS = {
     const amp   = Math.max(2, Math.round(bandH * (0.45 + rand() * 0.5)));
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / (dim - 1) + phase));
+        // Divide by `dim`, not `dim-1`: with /dim the sine completes exactly
+        // `freq` periods over [0, dim) so the value at x=0 matches the value
+        // at x=dim. That's what makes horizontal tiling seamless.
+        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / dim + phase));
         const yw   = ((y + disp) % dim + dim) % dim;
         m[y][x] = colors[Math.floor(yw * n / dim) % n];
       }
@@ -411,14 +420,19 @@ const MOTIFS = {
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
     const n     = colors.length;
-    // Smart variation: ring width + center offset + ring start phase
+    // Variation: ring width + ring-start phase. Center is FIXED at the motif
+    // midpoint and distance is TOROIDAL Chebyshev — both required so adjacent
+    // tiles interlock with no visible seam.
     const ringW = 1 + Math.floor(rand() * 3);          // 1,2,3
-    const cx    = (dim - 1) / 2 + (rand() - 0.5) * dim * 0.3;
-    const cy    = (dim - 1) / 2 + (rand() - 0.5) * dim * 0.3;
+    const c     = (dim - 1) / 2;
     const phase = Math.floor(rand() * n);
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const dist = Math.max(Math.abs(x - cx), Math.abs(y - cy));
+        const dxR = Math.abs(x - c);
+        const dyR = Math.abs(y - c);
+        const tdx = Math.min(dxR, dim - dxR);
+        const tdy = Math.min(dyR, dim - dyR);
+        const dist = Math.max(tdx, tdy);
         const ring = Math.floor(dist / ringW);
         m[y][x] = colors[(ring + phase) % n];
       }
@@ -431,9 +445,11 @@ const MOTIFS = {
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
     const n      = colors.length;
-    // Smart variation: frequency + amplitude + orientation (horiz / vert)
-    const freq     = 1 + Math.floor(rand() * 2);
-    const period   = Math.max(1, Math.floor(dim / freq));
+    // Variation: pick a period that divides dim cleanly (the full triangle
+    // wave period is 2*period — must divide dim for seamless tiling along
+    // the wave axis), plus amplitude and orientation.
+    const periodChoices = [2, 4, 8].filter(p => dim % (2 * p) === 0);
+    const period   = periodChoices[Math.floor(rand() * periodChoices.length)] || 8;
     const bandH    = dim / n;
     const amp      = Math.max(2, Math.round(bandH * (0.4 + rand() * 0.5)));
     const vertical = rand() > 0.5;     // half the time the zigzag runs the other axis
