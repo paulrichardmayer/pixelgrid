@@ -233,26 +233,53 @@ const MOTIFS = {
     const acc = accentIndices(palette, bg);
     for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
     if (acc.length === 0) return m;
+
+    // Smart variation: 3 distinct shapes × varied thickness/length
+    const variant = Math.floor(rand() * 3);   // 0=cross, 1=X-diagonal, 2=square frame
+    const thicknessRatio = 0.18 + rand() * 0.22;
+    const lengthRatio    = 0.30 + rand() * 0.18;
     const c = dim / 2;
-    const thickness = Math.max(2, Math.round(dim * 0.28));
-    const halfLen   = Math.max(thickness + 1, Math.round(dim * 0.38));
+    const thickness = Math.max(2, Math.round(dim * thicknessRatio));
+    const halfLen   = Math.max(thickness + 1, Math.round(dim * lengthRatio));
     const t0 = Math.floor(c - thickness / 2);
     const t1 = t0 + thickness;
     const aL = Math.floor(c - halfLen);
     const aR = Math.floor(c + halfLen);
     const armLen = aR - aL;
-    for (let y = t0; y < t1; y++) {
-      for (let x = aL; x < aR; x++) {
-        if (x < 0 || x >= dim || y < 0 || y >= dim) continue;
-        const seg = Math.floor((x - aL) * acc.length / armLen);
-        m[y][x] = acc[seg % acc.length];
+    const inRange = (i) => i >= 0 && i < dim;
+
+    if (variant === 0) {
+      // Plus / cross (original)
+      for (let y = t0; y < t1; y++) for (let x = aL; x < aR; x++) {
+        if (!inRange(x) || !inRange(y)) continue;
+        m[y][x] = acc[Math.floor((x - aL) * acc.length / armLen) % acc.length];
       }
-    }
-    for (let x = t0; x < t1; x++) {
-      for (let y = aL; y < aR; y++) {
-        if (x < 0 || x >= dim || y < 0 || y >= dim) continue;
-        const seg = Math.floor((y - aL) * acc.length / armLen);
-        m[y][x] = acc[seg % acc.length];
+      for (let x = t0; x < t1; x++) for (let y = aL; y < aR; y++) {
+        if (!inRange(x) || !inRange(y)) continue;
+        m[y][x] = acc[Math.floor((y - aL) * acc.length / armLen) % acc.length];
+      }
+    } else if (variant === 1) {
+      // X / diagonal cross — same thickness, drawn along the two diagonals
+      const half = thickness / 2;
+      for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) {
+        const onDiag1 = Math.abs((x - c) - (y - c)) <= half;        // ╲
+        const onDiag2 = Math.abs((x - c) + (y - c)) <= half;        // ╱
+        const inExtent = Math.max(Math.abs(x - c), Math.abs(y - c)) <= halfLen;
+        if (inExtent && (onDiag1 || onDiag2)) {
+          const seg = Math.floor((Math.abs(x - c) + Math.abs(y - c)) * acc.length / (halfLen * 2));
+          m[y][x] = acc[seg % acc.length];
+        }
+      }
+    } else {
+      // Square frame — outline of a square, no fill in middle
+      const outer = halfLen;
+      const inner = Math.max(1, outer - thickness);
+      for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) {
+        const cheby = Math.max(Math.abs(x - c), Math.abs(y - c));
+        if (cheby <= outer && cheby >= inner) {
+          const seg = Math.floor((cheby - inner) * acc.length / Math.max(1, outer - inner));
+          m[y][x] = acc[seg % acc.length];
+        }
       }
     }
     return m;
@@ -294,12 +321,14 @@ const MOTIFS = {
     const acc = accentIndices(palette, bg);
     const colors = [bg, ...acc];
     const n  = colors.length;
-    const freq  = 1;
+    // Smart variation: frequency (1 or 2 cycles), phase, amplitude all randomized
+    const freq  = 1 + Math.floor(rand() * 2);
+    const phase = rand() * Math.PI * 2;
     const bandH = dim / n;
-    const amp   = Math.max(2, Math.round(bandH * (0.55 + rand() * 0.3)));
+    const amp   = Math.max(2, Math.round(bandH * (0.45 + rand() * 0.5)));
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / (dim - 1)));
+        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / (dim - 1) + phase));
         const yw   = ((y + disp) % dim + dim) % dim;
         m[y][x] = colors[Math.floor(yw * n / dim) % n];
       }
@@ -308,15 +337,18 @@ const MOTIFS = {
   },
   brick(dim, palette, rand) {
     const m = make2D(dim);
-    const brickW = [4, 8][Math.floor(rand() * 2)];
-    const brickH = [2, 4][Math.floor(rand() * 2)];
+    // Smart variation: more W/H combos + variable offset ratio
+    const brickW = [2, 4, 8][Math.floor(rand() * 3)];
+    const brickH = [1, 2, 4][Math.floor(rand() * 3)];
+    // Offset fraction: 1/2 = classic running bond, 1/3 = third bond
+    const offFrac = [2, 3][Math.floor(rand() * 2)];
     const bg     = bgIndex(palette);
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
     const n = colors.length;
     for (let y = 0; y < dim; y++) {
       const row    = Math.floor(y / brickH);
-      const offset = (row % 2) * Math.floor(brickW / 2);
+      const offset = (row % offFrac) * Math.floor(brickW / offFrac);
       for (let x = 0; x < dim; x++) {
         const brickCol = Math.floor(((x + offset) % dim) / brickW);
         m[y][x] = colors[brickCol % n];
@@ -341,10 +373,20 @@ const MOTIFS = {
   halftone(dim, palette, rand) {
     const m = make2D(dim);
     const n = palette.length;
+    // Smart variation: rotation (0/90/180/270) + threshold inversion + offset
+    const rot = Math.floor(rand() * 4);
+    const inv = rand() > 0.5;
+    const ox  = Math.floor(rand() * 4);
+    const oy  = Math.floor(rand() * 4);
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const t = BAYER[y % 4][x % 4];
-        m[y][x] = Math.floor(t * n / 16);
+        // Apply rotation in 4×4 Bayer space
+        let rx = (x + ox) % 4;
+        let ry = (y + oy) % 4;
+        for (let r = 0; r < rot; r++) { const t = rx; rx = 3 - ry; ry = t; }
+        const t   = BAYER[ry][rx];
+        const idx = inv ? (15 - t) : t;
+        m[y][x] = Math.floor(idx * n / 16);
       }
     }
     return m;
@@ -354,14 +396,17 @@ const MOTIFS = {
     const bg     = bgIndex(palette);
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
-    const n    = colors.length;
-    const ringW = 1 + Math.floor(rand() * 2);
-    const c    = (dim - 1) / 2;
+    const n     = colors.length;
+    // Smart variation: ring width + center offset + ring start phase
+    const ringW = 1 + Math.floor(rand() * 3);          // 1,2,3
+    const cx    = (dim - 1) / 2 + (rand() - 0.5) * dim * 0.3;
+    const cy    = (dim - 1) / 2 + (rand() - 0.5) * dim * 0.3;
+    const phase = Math.floor(rand() * n);
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const dist = Math.max(Math.abs(x - c), Math.abs(y - c));
+        const dist = Math.max(Math.abs(x - cx), Math.abs(y - cy));
         const ring = Math.floor(dist / ringW);
-        m[y][x] = colors[ring % n];
+        m[y][x] = colors[(ring + phase) % n];
       }
     }
     return m;
@@ -371,17 +416,21 @@ const MOTIFS = {
     const bg     = bgIndex(palette);
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
-    const n    = colors.length;
-    const freq   = 1 + Math.floor(rand() * 2);
-    const period = Math.floor(dim / freq);
-    const bandH  = dim / n;
-    const amp    = Math.max(2, Math.round(bandH * 0.6));
+    const n      = colors.length;
+    // Smart variation: frequency + amplitude + orientation (horiz / vert)
+    const freq     = 1 + Math.floor(rand() * 2);
+    const period   = Math.max(1, Math.floor(dim / freq));
+    const bandH    = dim / n;
+    const amp      = Math.max(2, Math.round(bandH * (0.4 + rand() * 0.5)));
+    const vertical = rand() > 0.5;     // half the time the zigzag runs the other axis
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const tx   = x % (2 * period);
-        const fold = tx < period ? tx : 2 * period - tx;
-        const disp = Math.round(fold * amp / period);
-        const yw   = ((y + disp) % dim + dim) % dim;
+        const along = vertical ? y : x;
+        const cross = vertical ? x : y;
+        const tx    = along % (2 * period);
+        const fold  = tx < period ? tx : 2 * period - tx;
+        const disp  = Math.round(fold * amp / period);
+        const yw    = ((cross + disp) % dim + dim) % dim;
         m[y][x] = colors[Math.floor(yw * n / dim) % n];
       }
     }
