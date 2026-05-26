@@ -468,134 +468,268 @@ const MOTIFS = {
   },
 };
 
-// ---------- Generation (PRESERVED) ----------
+// ---------- Generation ----------
+// Two rendering paths:
+//   1) overdraw display canvas — ceil-based motif count so the tiled pattern
+//      always reaches every viewport edge with no clipping artifacts.
+//   2) clean export canvas — floor-based motif count, sized to the largest
+//      whole-motif rectangle that fits inside the viewport. Used by PNG/SVG/copy.
+//   3) preview-repeat — 3×3 motif block centered with red guide lines.
+
 function generate() {
   fitCanvas();
-  const tile  = state.gridSize;
-  const shape = state.tileShape;
-  const palette = [
+  if (state.previewRepeat) {
+    renderPreviewRepeat();
+    return;
+  }
+  renderToContext(ctx, {
+    W:   window.innerWidth,
+    H:   window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
+    overdraw: true,
+  });
+}
+
+function _currentPalette() {
+  return [
     { color: state.bg, influence: 50 },
     ...state.colors.map(c => ({ color: c, influence: 50 })),
   ];
+}
+function _currentMotif() {
+  const palette = _currentPalette();
   const rand    = mulberry32(state.seed);
   const motifFn = MOTIFS[state.style] ?? MOTIFS.noise;
-  const motif   = motifFn(MOTIF_DIM, palette, rand);
+  return { palette, motif: motifFn(MOTIF_DIM, palette, rand) };
+}
 
-  // Work in CSS-pixel space (fitCanvas already scaled ctx by dpr)
-  const W   = window.innerWidth;
-  const H   = window.innerHeight;
-  const dpr = window.devicePixelRatio || 1;
-  // Snap a CSS-pixel coordinate to land on an integer PHYSICAL pixel after the
-  // dpr scale of the canvas context. Without this, fractional DPR (1.25/1.5/1.75
-  // on Windows scaling) turns integer CSS coords into fractional physical coords,
-  // which anti-alias the rect edges and leave visible 1-px grid seams.
-  const snap = (v) => Math.round(v * dpr) / dpr;
-
-  let cols, rows, drawTile;
+/**
+ * Render the tiled pattern into a context.
+ * @param {CanvasRenderingContext2D} c2
+ * @param {{ W:number, H:number, dpr:number, overdraw:boolean }} opts
+ *   overdraw=true  → ceil-based motif count (display). Edges naturally clip.
+ *   overdraw=false → floor-based motif count (export). Output = clean tile.
+ */
+function renderToContext(c2, opts) {
+  const { W, H, dpr, overdraw } = opts;
+  const { palette, motif } = _currentMotif();
+  const cellPx  = state.gridSize;
+  const shape   = state.tileShape;
+  // Background fill — covers shape gaps (e.g. corners between adjacent circles)
+  // with the bg palette color so the motif still reads as a unified field.
+  c2.fillStyle = state.bg;
+  c2.fillRect(0, 0, W, H);
 
   if (shape === 'hexagon') {
-    const r0    = tile / 2;
-    const hexW0 = Math.sqrt(3) * r0;
-    cols = Math.max(1, Math.round(W / hexW0));
-    const eHexW = W / cols;
-    const er    = eHexW / Math.sqrt(3);
-    rows = Math.max(1, Math.ceil(H / (1.5 * er)) + 1);
-    drawTile = (c2, col, row, color) => {
-      const cx = col * eHexW + (row % 2 === 1 ? eHexW / 2 : 0) + eHexW / 2;
-      const cy = row * er * 1.5 + er;
+    _renderHexagons(c2, motif, palette, cellPx, W, H, dpr, overdraw);
+    return;
+  }
+
+  // Square-based shapes: tile count is in MOTIFS (16 cells each), then expand
+  // back to cell count for the inner draw loop.
+  const motifPx = MOTIF_DIM * cellPx;
+  const motifsX = overdraw
+    ? Math.max(1, Math.ceil(W / motifPx))
+    : Math.max(1, Math.floor(W / motifPx));
+  const motifsY = overdraw
+    ? Math.max(1, Math.ceil(H / motifPx))
+    : Math.max(1, Math.floor(H / motifPx));
+  const cellsX = motifsX * MOTIF_DIM;
+  const cellsY = motifsY * MOTIF_DIM;
+  _renderSquareCells(c2, motif, palette, cellPx, cellsX, cellsY, dpr, 0, 0);
+}
+
+function _renderSquareCells(c2, motif, palette, cellPx, cellsX, cellsY, dpr, originX, originY) {
+  // Snap a CSS-pixel coordinate to land on an integer PHYSICAL pixel after the
+  // dpr scale of the context. Eliminates 1-px seams on fractional-DPR displays.
+  const snap  = (v) => Math.round(v * dpr) / dpr;
+  const shape = state.tileShape;
+  let drawTile;
+
+  if (shape === 'square') {
+    drawTile = (col, row, color) => {
+      const x0 = snap(originX + col * cellPx);
+      const y0 = snap(originY + row * cellPx);
+      const x1 = snap(originX + (col + 1) * cellPx);
+      const y1 = snap(originY + (row + 1) * cellPx);
+      c2.fillStyle = color;
+      c2.fillRect(x0, y0, x1 - x0, y1 - y0);
+    };
+  } else if (shape === 'triangle') {
+    drawTile = (col, row, color) => {
+      const x0 = snap(originX + col * cellPx);
+      const x1 = snap(originX + (col + 1) * cellPx);
+      const xm = snap(originX + col * cellPx + cellPx / 2);
+      const y0 = snap(originY + row * cellPx);
+      const y1 = snap(originY + (row + 1) * cellPx);
       c2.fillStyle   = color;
-      c2.strokeStyle = color;       // seal sub-pixel seams between hex tiles
+      c2.strokeStyle = color;
       c2.lineWidth   = 1;
-      TILE_SHAPES.hexagon(c2, cx, cy, er);
+      c2.beginPath();
+      if ((col + row) % 2 === 0) {
+        c2.moveTo(xm, y0);
+        c2.lineTo(x1, y1);
+        c2.lineTo(x0, y1);
+      } else {
+        c2.moveTo(x0, y0);
+        c2.lineTo(x1, y0);
+        c2.lineTo(xm, y1);
+      }
+      c2.closePath();
+      c2.fill();
+      c2.stroke();
+    };
+  } else if (shape === 'circle') {
+    drawTile = (col, row, color) => {
+      const r  = cellPx / 2;
+      const cx = originX + col * cellPx + cellPx / 2;
+      const cy = originY + row * cellPx + cellPx / 2;
+      c2.fillStyle   = color;
+      c2.strokeStyle = color;
+      c2.lineWidth   = 1;
+      c2.beginPath();
+      c2.arc(cx, cy, r, 0, Math.PI * 2);
+      c2.fill();
       c2.stroke();
     };
   } else {
-    // Use Math.floor so tiles keep their exact gridSize — leftover space is
-    // split equally on both sides, giving symmetric gaps on all 4 edges.
-    cols = Math.max(1, Math.floor(W / tile));
-    rows = Math.max(1, Math.floor(H / tile));
-    const tW  = tile;
-    const tH  = tile;
-    const offX = (W - cols * tW) / 2;   // equal gap left & right
-    const offY = (H - rows * tH) / 2;   // equal gap top & bottom
-
-    if (shape === 'square') {
-      // Snap edges to physical-pixel boundaries so adjacent squares share an
-      // EXACT integer physical pixel — no seams even on fractional DPR.
-      drawTile = (c2, col, row, color) => {
-        const x0 = snap(offX + col * tW);
-        const y0 = snap(offY + row * tH);
-        const x1 = snap(offX + (col + 1) * tW);
-        const y1 = snap(offY + (row + 1) * tH);
-        c2.fillStyle = color;
-        c2.fillRect(x0, y0, x1 - x0, y1 - y0);
-      };
-    } else if (shape === 'triangle') {
-      // Snap every triangle vertex to a physical-pixel boundary so each
-      // triangle's diagonal anti-aliases identically across the field.
-      drawTile = (c2, col, row, color) => {
-        const x0 = snap(offX + col * tW);
-        const x1 = snap(offX + (col + 1) * tW);
-        const xm = snap(offX + col * tW + tW / 2);   // apex x
-        const y0 = snap(offY + row * tH);
-        const y1 = snap(offY + (row + 1) * tH);
-        c2.fillStyle   = color;
-        c2.strokeStyle = color;
-        c2.lineWidth   = 1;
-        c2.beginPath();
-        if ((col + row) % 2 === 0) {
-          c2.moveTo(xm, y0);          // top apex
-          c2.lineTo(x1, y1);          // bottom-right
-          c2.lineTo(x0, y1);          // bottom-left
-        } else {
-          c2.moveTo(x0, y0);          // top-left
-          c2.lineTo(x1, y0);          // top-right
-          c2.lineTo(xm, y1);          // bottom apex
-        }
-        c2.closePath();
-        c2.fill();
-        c2.stroke();
-      };
-    } else if (shape === 'circle') {
-      // Center each circle in its cell — fixes the "cut side" when cells are
-      // not square (tW ≠ tH). Since tiles are now always square (tW = tH = tile),
-      // r = tW/2 and the center is the true cell midpoint.
-      drawTile = (c2, col, row, color) => {
-        const r  = tW / 2;
-        const cx = offX + col * tW + tW / 2;
-        const cy = offY + row * tH + tH / 2;
-        c2.fillStyle   = color;
-        c2.strokeStyle = color;
-        c2.lineWidth   = 1;
-        c2.beginPath();
-        c2.arc(cx, cy, r, 0, Math.PI * 2);
-        c2.fill();
-        c2.stroke();
-      };
-    } else {
-      // Diamond and any future shapes — same-color stroke seals sub-pixel gaps
-      const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
-      drawTile = (c2, col, row, color) => {
-        c2.fillStyle   = color;
-        c2.strokeStyle = color;
-        c2.lineWidth   = 1;
-        shapeFn(c2, offX + col * tW, offY + row * tH, tW, col, row);
-        c2.stroke();
-      };
-    }
+    const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
+    drawTile = (col, row, color) => {
+      c2.fillStyle   = color;
+      c2.strokeStyle = color;
+      c2.lineWidth   = 1;
+      shapeFn(c2, originX + col * cellPx, originY + row * cellPx, cellPx, col, row);
+      c2.stroke();
+    };
   }
 
-  ctx.fillStyle = state.bg;
+  for (let row = 0; row < cellsY; row++) {
+    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+    for (let col = 0; col < cellsX; col++) {
+      const mx  = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+      const idx = motif[my][mx];
+      drawTile(col, row, palette[idx].color);
+    }
+  }
+}
+
+function _renderHexagons(c2, motif, palette, cellPx, W, H, dpr, overdraw) {
+  // Hex radius = cellPx (circumradius). Horizontal pitch = sqrt(3)*r,
+  // vertical pitch = 1.5*r. Use ceil + 1 so overflow covers viewport edges.
+  const r    = cellPx;
+  const hexW = Math.sqrt(3) * r;
+  const cols = overdraw
+    ? Math.max(1, Math.ceil(W / hexW) + 1)
+    : Math.max(1, Math.floor(W / hexW));
+  const rows = overdraw
+    ? Math.max(1, Math.ceil(H / (1.5 * r)) + 1)
+    : Math.max(1, Math.floor(H / (1.5 * r)));
+  for (let row = 0; row < rows; row++) {
+    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+    for (let col = 0; col < cols; col++) {
+      const mx  = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+      const idx = motif[my][mx];
+      const color = palette[idx].color;
+      const cx = col * hexW + (row % 2 === 1 ? hexW / 2 : 0) + hexW / 2;
+      const cy = row * r * 1.5 + r;
+      c2.fillStyle   = color;
+      c2.strokeStyle = color;
+      c2.lineWidth   = 1;
+      TILE_SHAPES.hexagon(c2, cx, cy, r);
+      c2.stroke();
+    }
+  }
+}
+
+/**
+ * Render a 3×3 motif preview centered in the viewport with thin red guide
+ * lines on the motif boundaries so the user can verify seamless tiling.
+ */
+function renderPreviewRepeat() {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const cellPx  = state.gridSize;
+  const motifPx = MOTIF_DIM * cellPx;
+  const REPEAT  = 3;
+  const totalPx = REPEAT * motifPx;
+  const { palette, motif } = _currentMotif();
+
+  // Neutral dark backdrop so the motif unit reads as a contained sample.
+  ctx.fillStyle = '#1a1a1f';
   ctx.fillRect(0, 0, W, H);
 
-  for (let row = 0; row < rows; row++) {
-    const my = row % MOTIF_DIM;
-    for (let col = 0; col < cols; col++) {
-      const mx  = col % MOTIF_DIM;
-      const idx = motif[my][mx];
-      drawTile(ctx, col, row, palette[idx].color);
-    }
+  // Center 3×3 grid in viewport
+  const startX = Math.round((W - totalPx) / 2);
+  const startY = Math.round((H - totalPx) / 2);
+
+  if (state.tileShape === 'hexagon') {
+    // Hex preview: render the hex grid clipped to the preview square. The
+    // hex tessellation doesn't align with a square block, so the visual
+    // guide lines still mark cell-grid boundaries (16-cell intervals).
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(startX, startY, totalPx, totalPx);
+    ctx.clip();
+    ctx.translate(startX, startY);
+    _renderHexagons(ctx, motif, palette, cellPx, totalPx, totalPx, dpr, false);
+    ctx.restore();
+  } else {
+    _renderSquareCells(ctx, motif, palette, cellPx,
+      REPEAT * MOTIF_DIM, REPEAT * MOTIF_DIM, dpr, startX, startY);
   }
+
+  // Guide lines at motif boundaries (red, 1.5 px). Half-pixel offset so the
+  // stroke sits cleanly on integer pixels rather than spreading 0.5 each side.
+  ctx.strokeStyle = 'rgba(255, 49, 49, 0.95)';
+  ctx.lineWidth   = 1.5;
+  for (let i = 1; i < REPEAT; i++) {
+    const px = Math.round(startX + i * motifPx) + 0.5;
+    const py = Math.round(startY + i * motifPx) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(px, startY);
+    ctx.lineTo(px, startY + totalPx);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(startX, py);
+    ctx.lineTo(startX + totalPx, py);
+    ctx.stroke();
+  }
+  // Outer border around the 3×3 block
+  ctx.lineWidth = 2;
+  ctx.strokeRect(startX + 0.5, startY + 0.5, totalPx - 1, totalPx - 1);
+}
+
+/**
+ * Build an offscreen canvas containing the clean-export tile (floor-based,
+ * native pixel scale, no DPR). Used by PNG, COPY, and the thumbnail snapshot.
+ * Returns { canvas, W, H } where W/H are the canvas dimensions.
+ */
+function buildExportCanvas() {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const cellPx  = state.gridSize;
+  const motifPx = MOTIF_DIM * cellPx;
+  let outW, outH;
+  if (state.tileShape === 'hexagon') {
+    // Hex doesn't naturally tile to a rectangle; use viewport size and accept
+    // that hex exports will have partial hexes at edges. The aesthetic still
+    // works because the rest of the grid is intact.
+    outW = W;
+    outH = H;
+  } else {
+    const motifsX = Math.max(1, Math.floor(W / motifPx));
+    const motifsY = Math.max(1, Math.floor(H / motifPx));
+    outW = motifsX * motifPx;
+    outH = motifsY * motifPx;
+  }
+  const off = document.createElement('canvas');
+  off.width = outW;
+  off.height = outH;
+  const octx = off.getContext('2d');
+  // dpr=1: this canvas is rendered at its true pixel size, no scaling.
+  renderToContext(octx, { W: outW, H: outH, dpr: 1, overdraw: false });
+  return { canvas: off, W: outW, H: outH };
 }
 
 function fitCanvas() {
@@ -1112,18 +1246,20 @@ centerRandomize.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); randomizeAll(); }
 });
 
-// ---------- Export (PRESERVED logic, rewired to new buttons) ----------
+// ---------- Export (always uses buildExportCanvas → clean tile) ----------
 document.getElementById('btn-png').addEventListener('click', () => {
+  const { canvas: off } = buildExportCanvas();
   const link = document.createElement('a');
   link.download = `pixelgrid-${state.style}-${shortHex(state.seed)}.png`;
-  link.href = canvas.toDataURL('image/png');
+  link.href = off.toDataURL('image/png');
   link.click();
 });
 
 document.getElementById('btn-copy').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   try {
-    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const { canvas: off } = buildExportCanvas();
+    const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   } catch {
     const orig = btn.textContent;
@@ -1135,30 +1271,30 @@ document.getElementById('btn-copy').addEventListener('click', async (e) => {
 document.getElementById('btn-svg').addEventListener('click', exportAsSVG);
 
 function exportAsSVG() {
-  const tile = state.gridSize;
-  const w    = window.innerWidth;
-  const h    = window.innerHeight;
-  const palette = [
-    { color: state.bg, influence: 50 },
-    ...state.colors.map(c => ({ color: c, influence: 50 })),
-  ];
-  const rand   = mulberry32(state.seed);
-  const motif  = (MOTIFS[state.style] ?? MOTIFS.noise)(MOTIF_DIM, palette, rand);
-  const cols  = Math.max(1, Math.floor(w / tile));
-  const rows  = Math.max(1, Math.floor(h / tile));
-  const tW    = tile, tH = tile;
-  const offX  = (w - cols * tW) / 2;
-  const offY  = (h - rows * tH) / 2;
-  let inner = `<rect width="${w}" height="${h}" fill="${state.bg}"/>\n`;
-  for (let row = 0; row < rows; row++) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const cellPx  = state.gridSize;
+  const motifPx = MOTIF_DIM * cellPx;
+  // Floor-based clean tile, matching the raster export sizing.
+  const motifsX = Math.max(1, Math.floor(W / motifPx));
+  const motifsY = Math.max(1, Math.floor(H / motifPx));
+  const outW = motifsX * motifPx;
+  const outH = motifsY * motifPx;
+  const cellsX = motifsX * MOTIF_DIM;
+  const cellsY = motifsY * MOTIF_DIM;
+
+  const { palette, motif } = _currentMotif();
+
+  let inner = `<rect width="${outW}" height="${outH}" fill="${state.bg}"/>\n`;
+  for (let row = 0; row < cellsY; row++) {
     const my = row % MOTIF_DIM;
-    for (let col = 0; col < cols; col++) {
+    for (let col = 0; col < cellsX; col++) {
       const mx    = col % MOTIF_DIM;
       const color = palette[motif[my][mx]].color;
-      inner += `<rect x="${+(offX + col * tW).toFixed(2)}" y="${+(offY + row * tH).toFixed(2)}" width="${+tW.toFixed(2)}" height="${+tH.toFixed(2)}" fill="${color}"/>\n`;
+      inner += `<rect x="${col * cellPx}" y="${row * cellPx}" width="${cellPx}" height="${cellPx}" fill="${color}"/>\n`;
     }
   }
-  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n${inner}</svg>`;
+  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}" viewBox="0 0 ${outW} ${outH}">\n${inner}</svg>`;
   const blob = new Blob([svgStr], { type: 'image/svg+xml' });
   const url  = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1251,13 +1387,15 @@ function loadConfig(cfg) {
 }
 
 // ---------- Thumbnail (FILLS slot, no letterbox) ----------
+// Always thumbnails from the clean export canvas so saves capture a true
+// tile sample regardless of whether preview-repeat is on.
 function makeThumbnail(size = 200) {
+  const { canvas: source } = buildExportCanvas();
   const off  = document.createElement('canvas');
   off.width  = size; off.height = size;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-  // Fill the slot edge-to-edge (per spec)
-  octx.drawImage(canvas, 0, 0, size, size);
+  octx.drawImage(source, 0, 0, size, size);
   return off.toDataURL('image/png');
 }
 
