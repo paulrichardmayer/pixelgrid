@@ -236,8 +236,12 @@ const MOTIFS = {
 
     // Smart variation: 3 distinct shapes × varied thickness/length
     const variant = Math.floor(rand() * 3);   // 0=cross, 1=X-diagonal, 2=square frame
-    const thicknessRatio = 0.18 + rand() * 0.22;
-    const lengthRatio    = 0.30 + rand() * 0.18;
+    const rT = rand();  // always consume so PRNG sequence stays consistent
+    const rL = rand();  // always consume so PRNG sequence stays consistent
+    // Cross (variant 0) uses fixed proportions — always looks clean and intentional.
+    // X and frame variants get random variation.
+    const thicknessRatio = variant === 0 ? 0.25 : (0.18 + rT * 0.22);
+    const lengthRatio    = variant === 0 ? 0.45 : (0.30 + rL * 0.18);
     const c = dim / 2;
     const thickness = Math.max(2, Math.round(dim * thicknessRatio));
     const halfLen   = Math.max(thickness + 1, Math.round(dim * lengthRatio));
@@ -480,19 +484,23 @@ function generate() {
       c2.stroke();
     };
   } else {
-    cols = Math.max(1, Math.round(W / tile));
-    rows = Math.max(1, Math.round(H / tile));
-    const tW = W / cols;
-    const tH = H / rows;
+    // Use Math.floor so tiles keep their exact gridSize — leftover space is
+    // split equally on both sides, giving symmetric gaps on all 4 edges.
+    cols = Math.max(1, Math.floor(W / tile));
+    rows = Math.max(1, Math.floor(H / tile));
+    const tW  = tile;
+    const tH  = tile;
+    const offX = (W - cols * tW) / 2;   // equal gap left & right
+    const offY = (H - rows * tH) / 2;   // equal gap top & bottom
 
     if (shape === 'square') {
       // Snap edges to physical-pixel boundaries so adjacent squares share an
       // EXACT integer physical pixel — no seams even on fractional DPR.
       drawTile = (c2, col, row, color) => {
-        const x0 = snap(col * tW);
-        const y0 = snap(row * tH);
-        const x1 = snap((col + 1) * tW);
-        const y1 = snap((row + 1) * tH);
+        const x0 = snap(offX + col * tW);
+        const y0 = snap(offY + row * tH);
+        const x1 = snap(offX + (col + 1) * tW);
+        const y1 = snap(offY + (row + 1) * tH);
         c2.fillStyle = color;
         c2.fillRect(x0, y0, x1 - x0, y1 - y0);
       };
@@ -500,11 +508,11 @@ function generate() {
       // Snap every triangle vertex to a physical-pixel boundary so each
       // triangle's diagonal anti-aliases identically across the field.
       drawTile = (c2, col, row, color) => {
-        const x0 = snap(col * tW);
-        const x1 = snap((col + 1) * tW);
-        const xm = snap(col * tW + tW / 2);   // apex x
-        const y0 = snap(row * tH);
-        const y1 = snap((row + 1) * tH);
+        const x0 = snap(offX + col * tW);
+        const x1 = snap(offX + (col + 1) * tW);
+        const xm = snap(offX + col * tW + tW / 2);   // apex x
+        const y0 = snap(offY + row * tH);
+        const y1 = snap(offY + (row + 1) * tH);
         c2.fillStyle   = color;
         c2.strokeStyle = color;
         c2.lineWidth   = 1;
@@ -522,14 +530,30 @@ function generate() {
         c2.fill();
         c2.stroke();
       };
+    } else if (shape === 'circle') {
+      // Center each circle in its cell — fixes the "cut side" when cells are
+      // not square (tW ≠ tH). Since tiles are now always square (tW = tH = tile),
+      // r = tW/2 and the center is the true cell midpoint.
+      drawTile = (c2, col, row, color) => {
+        const r  = tW / 2;
+        const cx = offX + col * tW + tW / 2;
+        const cy = offY + row * tH + tH / 2;
+        c2.fillStyle   = color;
+        c2.strokeStyle = color;
+        c2.lineWidth   = 1;
+        c2.beginPath();
+        c2.arc(cx, cy, r, 0, Math.PI * 2);
+        c2.fill();
+        c2.stroke();
+      };
     } else {
-      // Curved/diagonal shapes still need the same-color stroke to seal seams
+      // Diamond and any future shapes — same-color stroke seals sub-pixel gaps
       const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
       drawTile = (c2, col, row, color) => {
         c2.fillStyle   = color;
         c2.strokeStyle = color;
         c2.lineWidth   = 1;
-        shapeFn(c2, col * tW, row * tH, Math.min(tW, tH), col, row);
+        shapeFn(c2, offX + col * tW, offY + row * tH, tW, col, row);
         c2.stroke();
       };
     }
@@ -1072,16 +1096,18 @@ function exportAsSVG() {
   ];
   const rand   = mulberry32(state.seed);
   const motif  = (MOTIFS[state.style] ?? MOTIFS.noise)(MOTIF_DIM, palette, rand);
-  const cols   = Math.max(1, Math.round(w / tile));
-  const rows   = Math.max(1, Math.round(h / tile));
-  const tW = w / cols, tH = h / rows;
+  const cols  = Math.max(1, Math.floor(w / tile));
+  const rows  = Math.max(1, Math.floor(h / tile));
+  const tW    = tile, tH = tile;
+  const offX  = (w - cols * tW) / 2;
+  const offY  = (h - rows * tH) / 2;
   let inner = `<rect width="${w}" height="${h}" fill="${state.bg}"/>\n`;
   for (let row = 0; row < rows; row++) {
     const my = row % MOTIF_DIM;
     for (let col = 0; col < cols; col++) {
       const mx    = col % MOTIF_DIM;
       const color = palette[motif[my][mx]].color;
-      inner += `<rect x="${+(col * tW).toFixed(2)}" y="${+(row * tH).toFixed(2)}" width="${+tW.toFixed(2)}" height="${+tH.toFixed(2)}" fill="${color}"/>\n`;
+      inner += `<rect x="${+(offX + col * tW).toFixed(2)}" y="${+(offY + row * tH).toFixed(2)}" width="${+tW.toFixed(2)}" height="${+tH.toFixed(2)}" fill="${color}"/>\n`;
     }
   }
   const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n${inner}</svg>`;
