@@ -15,12 +15,18 @@ const SAVES_KEY  = 'pixelgrid.saves.v1';
 const SAVE_SLOTS = 12;
 
 const state = {
-  bg:        DEFAULT_BG,
-  colors:    [...DEFAULT_COLORS],
-  gridSize:  24,
-  style:     STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
-  tileShape: 'square',
-  seed:      randomSeed(),
+  bg:            DEFAULT_BG,
+  colors:        [...DEFAULT_COLORS],
+  // gridSize = pixels per logical motif cell. Motif is always 16×16 cells,
+  // so motif pixel size = 16 * gridSize. Slider range: 4–24 px/cell
+  // → motif size 64–384 px.
+  gridSize:      8,
+  style:         STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
+  tileShape:     'square',
+  seed:          randomSeed(),
+  // When true, render the motif as a 3×3 tile preview with thin guide lines
+  // marking motif boundaries so seamless tiling can be verified.
+  previewRepeat: false,
 };
 
 let saveSlots = new Array(SAVE_SLOTS).fill(null);
@@ -111,15 +117,19 @@ const savedPatterns = document.getElementById('saved-patterns');
 const centerRandomize = document.getElementById('center-randomize');
 
 // ---------- Square slider thumb (grows left→right) ----------
-const THUMB_MIN = 16;   // px at value=4  (10 → 16 so it reads as a thumb, not a marker)
-const THUMB_MAX = 30;   // px at value=64
+// Range is now 4–24 px/cell (was 4–64), so the thumb size scales over a
+// 20-unit range. THUMB_MIN/MAX kept as before for visual continuity.
+const THUMB_MIN  = 16;   // px at value=4
+const THUMB_MAX  = 30;   // px at value=24
+const SCALE_MIN  = 4;
+const SCALE_MAX  = 24;
 
 function updateThumb(value) {
   if (!sliderThumb || !sliderTrack) return;
-  const pct  = (Math.max(4, Math.min(64, value)) - 4) / 60;
+  const v   = Math.max(SCALE_MIN, Math.min(SCALE_MAX, value));
+  const pct = (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN);
   const size = Math.round(THUMB_MIN + (THUMB_MAX - THUMB_MIN) * pct);
   const trackW = sliderTrack.clientWidth;
-  // left edge = 0 at pct=0, right edge = trackW at pct=1
   const center = size / 2 + pct * (trackW - size);
   sliderThumb.style.width  = size + 'px';
   sliderThumb.style.height = size + 'px';
@@ -937,7 +947,7 @@ function renderSwatches() {
 // ---------- Grid size slider (live preview) ----------
 gridSizeEl.addEventListener('input', e => {
   state.gridSize = parseInt(e.target.value, 10);
-  gridLabel.textContent = `${state.gridSize} px`;
+  gridLabel.textContent = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   generate();
 });
@@ -1035,12 +1045,13 @@ function randomizeAll() {
   state.colors    = Array.from({ length: n }, randomHex);
   state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
   state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
-  state.gridSize  = 4 + Math.floor(Math.random() * 61);
+  // randomize scale within the new 4–24 px/cell range
+  state.gridSize  = SCALE_MIN + Math.floor(Math.random() * (SCALE_MAX - SCALE_MIN + 1));
   state.seed      = randomSeed();
   // Sync UI to new state
   bgPill.style.background = state.bg;
   gridSizeEl.value        = String(state.gridSize);
-  gridLabel.textContent   = `${state.gridSize} px`;
+  gridLabel.textContent   = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1053,6 +1064,27 @@ function generateVariation() {
   state.seed = randomSeed();
   generate();
 }
+
+// ---------- Preview-repeat toggle ----------
+// When ON, generate() will draw the motif 3×3 with thin guide lines marking
+// motif boundaries so the user can verify seamless tiling. When OFF (default),
+// generate() renders the full overdraw display canvas. Behavior is wired in a
+// later commit alongside the canvas-sizing rewrite.
+const previewToggleBtn = document.getElementById('preview-repeat');
+function applyPreviewToggleUI() {
+  if (!previewToggleBtn) return;
+  previewToggleBtn.classList.toggle('active', !!state.previewRepeat);
+  previewToggleBtn.textContent = state.previewRepeat ? 'on' : 'off';
+  previewToggleBtn.setAttribute('aria-pressed', state.previewRepeat ? 'true' : 'false');
+}
+if (previewToggleBtn) {
+  previewToggleBtn.addEventListener('click', () => {
+    state.previewRepeat = !state.previewRepeat;
+    applyPreviewToggleUI();
+    generate();
+  });
+}
+applyPreviewToggleUI();
 
 document.getElementById('btn-randomize').addEventListener('click', randomizeAll);
 document.getElementById('btn-generate').addEventListener('click', generateVariation);
@@ -1184,7 +1216,8 @@ function loadConfig(cfg) {
   }
 
   state.seed      = cfg.seed >>> 0;
-  state.gridSize  = cfg.gridSize;
+  // Clamp legacy saves (old slider went up to 64) into the new 4–24 range.
+  state.gridSize  = Math.max(SCALE_MIN, Math.min(SCALE_MAX, cfg.gridSize));
   state.style     = cfg.style;
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
   state.bg        = bg;
@@ -1192,7 +1225,7 @@ function loadConfig(cfg) {
 
   bgPill.style.background = state.bg;
   gridSizeEl.value        = String(state.gridSize);
-  gridLabel.textContent   = `${state.gridSize} px`;
+  gridLabel.textContent   = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1278,7 +1311,7 @@ loadSaves();
 
 bgPill.style.background = state.bg;
 gridSizeEl.value        = String(state.gridSize);
-gridLabel.textContent   = `${state.gridSize} px`;
+gridLabel.textContent   = `${state.gridSize} px/cell`;
 
 renderSwatches();
 buildTileShapeList();

@@ -59,17 +59,21 @@
         <span class="ctrl-label">pattern colors</span>
         <div class="color-swatches" id="color-swatches"></div>
 
-        <!-- Row: grid size + value -->
-        <span class="ctrl-label">grid size</span>
-        <span class="ctrl-value" id="grid-label">24 px</span>
+        <!-- Row: scale + value (px/cell, 1 cell = one logical 16×16 motif unit) -->
+        <span class="ctrl-label">scale</span>
+        <span class="ctrl-value" id="grid-label">8 px/cell</span>
 
-        <!-- Row: Slider (full width) -->
+        <!-- Row: Slider (full width) — pixels per logical motif cell (4–24) -->
         <div class="slider-row">
           <div class="slider-track" id="slider-track">
-            <input type="range" id="grid-size" min="4" max="64" value="24" step="1" />
+            <input type="range" id="grid-size" min="4" max="24" value="8" step="1" />
             <div class="slider-thumb" id="slider-thumb"></div>
           </div>
         </div>
+
+        <!-- Row: preview-repeat toggle (verify motif tiles seamlessly) -->
+        <span class="ctrl-label">preview repeat</span>
+        <button type="button" class="preview-toggle" id="preview-repeat" aria-pressed="false">off</button>
 
         <!-- Row: tile shape -->
         <span class="ctrl-label">tile shape</span>
