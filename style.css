@@ -176,6 +176,37 @@ html, body {
   justify-self: start;
 }
 
+/* ── Palette mode select (and harmony-rule select) ── */
+.palette-select {
+  grid-column: 2;
+  font-family: 'Host Grotesk', sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: #000;
+  background: #fff;
+  border: 5px solid #000;
+  border-radius: 100px;
+  padding: 4px 36px 4px 14px;
+  height: 38px;
+  line-height: 1;
+  outline: none;
+  width: 100%;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  /* small chevron via background-image */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  cursor: pointer;
+}
+.palette-select:focus { outline: none; }
+/* Mode-conditional rows — hidden by default, JS shows when active */
+.mode-harmony,
+.mode-image { display: none; }
+.controls-body.mode-is-harmony .mode-harmony { display: block; }
+.controls-body.mode-is-harmony select.mode-harmony { display: block; }
+
 /* ── Background pill — bleeds OUTSIDE the floating UI ──
    panel-card padding-right = 20, border = 8 → 28px to reach panel's outer edge.
    We extend an extra 32px past that, so the pill visibly bleeds onto the page bg. */

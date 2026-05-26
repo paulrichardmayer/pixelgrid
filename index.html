@@ -51,6 +51,25 @@
         </svg>
         <span class="controls-title header-cell">controls</span>
 
+        <!-- Row: palette mode -->
+        <span class="ctrl-label">palette</span>
+        <select class="palette-select" id="palette-mode">
+          <option value="curated">Curated</option>
+          <option value="harmony">Harmony</option>
+          <option value="image">From Image</option>
+        </select>
+
+        <!-- Row: harmony rule (only visible when palette mode = harmony) -->
+        <span class="ctrl-label mode-harmony" id="harmony-rule-label">harmony rule</span>
+        <select class="palette-select mode-harmony" id="harmony-rule">
+          <option value="complementary">Complementary</option>
+          <option value="analogous">Analogous</option>
+          <option value="triadic">Triadic</option>
+          <option value="split-complementary">Split-Complementary</option>
+          <option value="tetradic">Tetradic</option>
+          <option value="monochromatic">Monochromatic</option>
+        </select>
+
         <!-- Row: background -->
         <span class="ctrl-label">background</span>
         <div class="bg-pill" id="bg-pill" style="background:#dfff00"></div>
@@ -105,6 +124,10 @@
 
   </div><!-- /#panel -->
 
+  <!-- Hidden file input used by 'From Image' palette mode -->
+  <input type="file" id="image-file-input" accept="image/*" style="display:none" />
+
+  <script src="palettes.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

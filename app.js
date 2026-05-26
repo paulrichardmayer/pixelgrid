@@ -15,12 +15,19 @@ const SAVES_KEY  = 'pixelgrid.saves.v1';
 const SAVE_SLOTS = 12;
 
 const state = {
-  bg:        DEFAULT_BG,
-  colors:    [...DEFAULT_COLORS],
-  gridSize:  24,
-  style:     STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
-  tileShape: 'square',
-  seed:      randomSeed(),
+  bg:           DEFAULT_BG,
+  colors:       [...DEFAULT_COLORS],
+  gridSize:     24,
+  style:        STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
+  tileShape:    'square',
+  seed:         randomSeed(),
+  // Palette-generation mode (set via the 'palette' dropdown).
+  // 'curated'  → pick from the embedded CURATED_PALETTES list
+  // 'harmony'  → derive 3–5 colors from state.bg using state.harmonyRule (OKLCH)
+  // 'image'    → extract dominant colors from a user-supplied image (k-means)
+  paletteMode:  'curated',
+  harmonyRule:  'complementary',
+  imagePalette: null,   // cached {bg, colors} from the last image extraction
 };
 
 let saveSlots = new Array(SAVE_SLOTS).fill(null);
@@ -44,6 +51,196 @@ function mulberry32(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// =========================================================
+// COLOR MATH — sRGB ↔ linear sRGB ↔ OKLab ↔ OKLCH + HSL + WCAG luminance
+// All math inlined (no build step, no external libs).
+// Reference: Björn Ottosson's OKLab paper + CSS Color Module Level 4.
+// =========================================================
+function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function hexToRgb(hex) {
+  return {
+    r: parseInt(hex.slice(1, 3), 16) / 255,
+    g: parseInt(hex.slice(3, 5), 16) / 255,
+    b: parseInt(hex.slice(5, 7), 16) / 255,
+  };
+}
+function rgbToHex(r, g, b) {
+  const c = v => _clamp(Math.round(v * 255), 0, 255).toString(16).padStart(2, '0');
+  return '#' + c(r) + c(g) + c(b);
+}
+
+function srgbToLinear(c) {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(c) {
+  c = _clamp(c, 0, 1);
+  return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+
+function linearRgbToOklab(r, g, b) {
+  const l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+  const m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+  const s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+  const l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
+  return {
+    L: 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+    a: 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+    b: 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+  };
+}
+function oklabToLinearRgb(L, a, b) {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+  const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+  return {
+    r:  4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    g: -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    b: -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+  };
+}
+function oklabToOklch(L, a, b) {
+  const C = Math.sqrt(a * a + b * b);
+  let h = Math.atan2(b, a) * 180 / Math.PI;
+  if (h < 0) h += 360;
+  return { L, C, h };
+}
+function oklchToOklab(L, C, h) {
+  const r = h * Math.PI / 180;
+  return { L, a: C * Math.cos(r), b: C * Math.sin(r) };
+}
+
+function hexToOklch(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const lab = linearRgbToOklab(srgbToLinear(r), srgbToLinear(g), srgbToLinear(b));
+  return oklabToOklch(lab.L, lab.a, lab.b);
+}
+function oklchToHex(L, C, h) {
+  const lab = oklchToOklab(L, C, h);
+  const lin = oklabToLinearRgb(lab.L, lab.a, lab.b);
+  // Gamut clamp: if any channel out of [0,1], scale chroma down until it fits.
+  let r = lin.r, g = lin.g, b = lin.b;
+  if (r < 0 || g < 0 || b < 0 || r > 1 || g > 1 || b > 1) {
+    let lo = 0, hi = C;
+    for (let i = 0; i < 18; i++) {
+      const mid = (lo + hi) / 2;
+      const tlab = oklchToOklab(L, mid, h);
+      const tlin = oklabToLinearRgb(tlab.L, tlab.a, tlab.b);
+      const ok = tlin.r >= 0 && tlin.g >= 0 && tlin.b >= 0 &&
+                 tlin.r <= 1 && tlin.g <= 1 && tlin.b <= 1;
+      if (ok) lo = mid; else hi = mid;
+    }
+    const flab = oklchToOklab(L, lo, h);
+    const flin = oklabToLinearRgb(flab.L, flab.a, flab.b);
+    r = flin.r; g = flin.g; b = flin.b;
+  }
+  return rgbToHex(linearToSrgb(r), linearToSrgb(g), linearToSrgb(b));
+}
+
+function hexToHsl(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  const L = (max + min) / 2;
+  let S = 0;
+  if (d) S = L > 0.5 ? d / (2 - max - min) : d / (max + min);
+  return { L, S };
+}
+
+function relativeLuminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
+}
+function contrastRatio(hexA, hexB) {
+  const la = relativeLuminance(hexA);
+  const lb = relativeLuminance(hexB);
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// =========================================================
+// CONSTRAINT FILTER — score a palette on contrast, lightness
+// spread, and saturation variance. Higher = better. Hard fails
+// return -Infinity so they're never picked over a passing one.
+// =========================================================
+function scorePalette(colors) {
+  if (!colors || colors.length < 2) return -Infinity;
+  // 1) Max pair contrast must meet WCAG AA (~4.5:1)
+  let maxContrast = 0;
+  for (let i = 0; i < colors.length; i++) {
+    for (let j = i + 1; j < colors.length; j++) {
+      const c = contrastRatio(colors[i], colors[j]);
+      if (c > maxContrast) maxContrast = c;
+    }
+  }
+  if (maxContrast < 4.5) return -Infinity;
+  // 2) Lightness range — guards against muddy / low-key palettes
+  const ls = colors.map(c => hexToHsl(c).L);
+  const lRange = Math.max(...ls) - Math.min(...ls);
+  if (lRange < 0.25) return -Infinity;
+  // 3) Saturation variance — guards against "all the same saturation" outputs
+  const ss = colors.map(c => hexToHsl(c).S);
+  const sMean = ss.reduce((a, b) => a + b, 0) / ss.length;
+  const sVar = ss.reduce((a, b) => a + (b - sMean) ** 2, 0) / ss.length;
+  // Composite score — contrast carries the most weight, then lightness range,
+  // then a small bonus for saturation diversity.
+  return maxContrast + lRange * 3 + sVar * 5;
+}
+
+/**
+ * Generate up to `attempts` candidate palettes via candidateFn() and return
+ * the highest-scoring one. Falls back to the last candidate if all fail.
+ * candidateFn returns { bg, colors } | null.
+ */
+function pickBestPalette(candidateFn, attempts = 5) {
+  let best = null, bestScore = -Infinity, last = null;
+  for (let i = 0; i < attempts; i++) {
+    const p = candidateFn();
+    if (!p) continue;
+    last = p;
+    const s = scorePalette([p.bg, ...p.colors]);
+    if (s > bestScore) { bestScore = s; best = p; }
+  }
+  return best || last;
+}
+
+// =========================================================
+// PALETTE GENERATORS — one per mode. All return { bg, colors }.
+// =========================================================
+function _generateCuratedCandidate() {
+  const list = (window.CURATED_PALETTES || []);
+  if (list.length === 0) return null;
+  const p = list[Math.floor(Math.random() * list.length)];
+  return { bg: p.colors[0], colors: p.colors.slice(1) };
+}
+
+function generateCuratedPalette() {
+  return pickBestPalette(_generateCuratedCandidate, 5);
+}
+
+/**
+ * Master palette dispatcher. Reads state.paletteMode and routes to the
+ * right generator. Always passes through the constraint filter (the
+ * individual generators call pickBestPalette internally).
+ */
+function generatePalette() {
+  switch (state.paletteMode) {
+    case 'harmony':
+      // Harmony generator is added in a later commit. Fall back to curated
+      // until the user has supplied a base color + rule.
+      return (typeof generateHarmonyPalette === 'function')
+        ? generateHarmonyPalette(state.bg, state.harmonyRule)
+        : generateCuratedPalette();
+    case 'image':
+      // If the user has dropped an image previously, reuse that palette.
+      // Otherwise fall back to curated so randomize stays useful.
+      return state.imagePalette || generateCuratedPalette();
+    case 'curated':
+    default:
+      return generateCuratedPalette();
+  }
 }
 
 // ---------- Tile shapes (PRESERVED) ----------
@@ -109,6 +306,9 @@ const tileShapeScroll = document.getElementById('tile-shape-scroll');
 const styleScroll  = document.getElementById('style-scroll');
 const savedPatterns = document.getElementById('saved-patterns');
 const centerRandomize = document.getElementById('center-randomize');
+const paletteModeEl  = document.getElementById('palette-mode');
+const harmonyRuleEl  = document.getElementById('harmony-rule');
+const controlsBodyEl = document.querySelector('.controls-body');
 
 // ---------- Square slider thumb (grows left→right) ----------
 const THUMB_MIN = 16;   // px at value=4  (10 → 16 so it reads as a thumb, not a marker)
@@ -1027,16 +1227,27 @@ function randomHex() {
   return '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
 }
 
-// Full randomize — bg, colors (1–3), tile shape, style, grid size, seed
+// Full randomize — palette (via dispatcher), tile shape, style, grid size, seed
 function randomizeAll() {
   closeColorPicker();
-  state.bg        = randomHex();
-  const n         = 1 + Math.floor(Math.random() * 3);
-  state.colors    = Array.from({ length: n }, randomHex);
+
+  // Palette comes from the current mode (curated / harmony / image)
+  // and passes through the constraint filter.
+  const pal = generatePalette();
+  if (pal && pal.bg && Array.isArray(pal.colors) && pal.colors.length > 0) {
+    state.bg     = pal.bg;
+    state.colors = pal.colors.slice(0, 3);
+  } else {
+    // Defensive fallback (shouldn't happen — pickBestPalette returns last candidate).
+    state.bg     = randomHex();
+    state.colors = [randomHex(), randomHex(), randomHex()];
+  }
+
   state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
   state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
   state.gridSize  = 4 + Math.floor(Math.random() * 61);
   state.seed      = randomSeed();
+
   // Sync UI to new state
   bgPill.style.background = state.bg;
   gridSizeEl.value        = String(state.gridSize);
@@ -1053,6 +1264,27 @@ function generateVariation() {
   state.seed = randomSeed();
   generate();
 }
+
+// ---------- Palette mode dropdown ----------
+function applyPaletteModeUI() {
+  if (!controlsBodyEl) return;
+  controlsBodyEl.classList.remove('mode-is-curated', 'mode-is-harmony', 'mode-is-image');
+  controlsBodyEl.classList.add('mode-is-' + state.paletteMode);
+}
+if (paletteModeEl) {
+  paletteModeEl.value = state.paletteMode;
+  paletteModeEl.addEventListener('change', e => {
+    state.paletteMode = e.target.value;
+    applyPaletteModeUI();
+  });
+}
+if (harmonyRuleEl) {
+  harmonyRuleEl.value = state.harmonyRule;
+  harmonyRuleEl.addEventListener('change', e => {
+    state.harmonyRule = e.target.value;
+  });
+}
+applyPaletteModeUI();
 
 document.getElementById('btn-randomize').addEventListener('click', randomizeAll);
 document.getElementById('btn-generate').addEventListener('click', generateVariation);
