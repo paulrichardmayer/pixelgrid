@@ -4,103 +4,106 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Chromatic Pattern Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Host+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="app">
-    <aside class="panel">
-      <header class="panel-header">
-        <h1>Chromatic <span>Pattern Engine</span></h1>
-        <p class="tag">generative pixel-grid sketchbook</p>
-      </header>
 
-      <section class="group">
-        <div class="group-head">
-          <h2>Palette</h2>
-          <button id="addColor" class="ghost" title="Add color">+ add</button>
-        </div>
-        <div id="palette" class="palette"></div>
-      </section>
+  <!-- Pattern canvas (full viewport, behind everything) -->
+  <canvas id="canvas"></canvas>
 
-      <section class="group">
-        <div class="group-head">
-          <h2>Grid size</h2>
-          <span id="gridLabel" class="value">24 px</span>
-        </div>
-        <input type="range" id="gridSize" min="4" max="64" value="24" step="1" />
-      </section>
+  <!-- ============ CENTERED RANDOMIZE BUTTON (visible only when panel closed) ============ -->
+  <div id="center-randomize" role="button" tabindex="0" aria-label="Randomize">
+    <svg width="85" height="85" viewBox="0 0 85 85" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M77.5 69.167H70.833V75.833H59.167V82.5H25.833V75.833H14.167V69.167H7.5V57.5H2.5V27.5H7.5V15.833H14.167V9.16699H25.833V2.5H59.167V9.16699H70.833V15.833H77.5V27.5H82.5V57.5H77.5V69.167Z" fill="white"/>
+      <path d="M61.667 0V6.66699H73.333V13.333H80V25H85V60H80V71.667H73.333V78.333H61.667V85H23.333V78.333H11.667V71.667H5V60H0V25H5V13.333H11.667V6.66699H23.333V0H61.667ZM28.333 11.667H16.667V18.333H10V30H5V55H10V66.667H16.667V73.333H28.333V80H56.667V73.333H68.333V66.667H75V55H80V30H75V18.333H68.333V11.667H56.667V5H28.333V11.667Z" fill="black"/>
+      <path d="M34.3184 43.834V47.834H29.4805L33.4756 51.6582L33.5205 51.7021C35.0425 53.2535 36.9222 54.3841 38.9824 54.9912C41.0423 55.5982 43.2187 55.6635 45.3096 55.1816C47.4006 54.6996 49.3419 53.6847 50.9502 52.2285C52.5588 50.7719 53.7831 48.9199 54.5039 46.8447L58.2822 48.1572C57.3432 50.8607 55.746 53.2825 53.6357 55.1934C51.5252 57.1045 48.9697 58.4425 46.208 59.0791C43.4463 59.7156 40.571 59.6285 37.8516 58.8271C35.1523 58.0317 32.6975 56.5586 30.71 54.5479L26.5 50.5176V55.8369H22.5V45.834C22.5001 44.7295 23.3955 43.834 24.5 43.834H34.3184ZM38.792 25.9209C41.5537 25.2844 44.429 25.3715 47.1484 26.1729C49.8477 26.9683 52.3025 28.4414 54.29 30.4521L58.5 34.4814V29.1631H62.5V39.166C62.4999 40.2705 61.6045 41.166 60.5 41.166H50.6816V37.166H55.5195L51.5244 33.3418C51.5093 33.3273 51.4941 33.3128 51.4795 33.2979C49.9575 31.7465 48.0778 30.6159 46.0176 30.0088C43.9577 29.4018 41.7813 29.3365 39.6904 29.8184C37.5994 30.3004 35.6581 31.3153 34.0498 32.7715C32.4412 34.2281 31.2169 36.0801 30.4961 38.1553L26.7178 36.8428C27.6568 34.1393 29.254 31.7175 31.3643 29.8066C33.4748 27.8955 36.0303 26.5575 38.792 25.9209Z" fill="black"/>
+    </svg>
+  </div>
 
-      <section class="group">
-        <div class="group-head">
-          <h2>Tile shape</h2>
-        </div>
-        <select id="tileShape">
-          <option value="square">Square</option>
-          <option value="circle">Circle</option>
-          <option value="triangle">Triangle</option>
-          <option value="diamond">Diamond</option>
-          <option value="hexagon">Hexagon</option>
-        </select>
-      </section>
+  <!-- ============ TOGGLE BUTTON (visible when panel CLOSED) ============ -->
+  <div id="toggle-btn" role="button" tabindex="0" aria-label="Open controls">
+    <svg width="85" height="85" viewBox="0 0 85 85" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M77.5 69.167H70.833V75.833H59.167V82.5H25.833V75.833H14.167V69.167H7.5V57.5H2.5V27.5H7.5V15.833H14.167V9.16699H25.833V2.5H59.167V9.16699H70.833V15.833H77.5V27.5H82.5V57.5H77.5V69.167Z" fill="white"/>
+      <path d="M61.667 0V6.66699H73.333V13.333H80V25H85V60H80V71.667H73.333V78.333H61.667V85H23.333V78.333H11.667V71.667H5V60H0V25H5V13.333H11.667V6.66699H23.333V0H61.667ZM28.333 11.667H16.667V18.333H10V30H5V55H10V66.667H16.667V73.333H28.333V80H56.667V73.333H68.333V66.667H75V55H80V30H75V18.333H68.333V11.667H56.667V5H28.333V11.667Z" fill="black"/>
+    </svg>
+    <svg class="face-inner" width="40" height="13" viewBox="0 0 40 13" fill="none" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="4.24685" cy="4.24685" r="4.24685" fill="black"/>
+      <path d="M27.0612 4.81146C27.0431 5.95302 26.88 6.99491 26.572 7.93714C26.264 8.86126 25.8019 9.64947 25.1858 10.3018C24.5879 10.9541 23.854 11.4615 22.9843 11.8239C22.1145 12.1681 21.1089 12.3403 19.9673 12.3403C18.8439 12.3403 17.8382 12.1681 16.9503 11.8239C16.0806 11.4615 15.3467 10.9541 14.7488 10.3018C14.1508 9.63135 13.6978 8.83408 13.3898 7.90996C13.0818 6.98585 12.9277 5.95302 12.9277 4.81146H15.9175C15.9356 5.89866 16.0806 6.83183 16.3524 7.61099C16.6423 8.39014 17.0862 8.9881 17.6842 9.40485C18.3003 9.80349 19.0704 10.0028 19.9945 10.0028C20.9367 10.0028 21.7068 9.80349 22.3048 9.40485C22.9027 8.9881 23.3376 8.39014 23.6094 7.61099C23.8993 6.83183 24.0443 5.89866 24.0443 4.81146H27.0612Z" fill="black"/>
+      <circle cx="35.7532" cy="4.24685" r="4.24685" fill="black"/>
+    </svg>
+  </div>
 
-      <section class="group">
-        <div class="group-head">
-          <h2>Style</h2>
-        </div>
-        <select id="style">
-          <option value="noise">Noise</option>
-          <option value="checker">Checkerboard</option>
-          <option value="diagonal">Diagonal Stripes</option>
-          <option value="mosaic">Mosaic</option>
-          <option value="scattered">Scattered</option>
-          <option value="wave">Wave</option>
-        </select>
-      </section>
+  <!-- ============ PANEL (visible when OPEN) ============ -->
+  <div id="panel">
 
-      <section class="group">
-        <div class="group-head">
-          <h2>Seed</h2>
-        </div>
-        <div class="seed-row">
-          <input type="text" id="seed" inputmode="numeric" />
-          <button id="randomizeSeed" class="ghost icon" title="Randomize seed">⟳</button>
-          <button id="copySeed" class="ghost" title="Copy seed">copy</button>
-        </div>
-      </section>
+    <div class="panel-card">
 
-      <section class="actions">
-        <button id="generate" class="primary">Generate <kbd>Space</kbd></button>
-        <div class="action-row">
-          <button id="favorite" class="secondary" title="Save to favorites (S)">★ Save <kbd>S</kbd></button>
-          <button id="export" class="secondary">Export PNG</button>
-        </div>
-        <div class="action-row">
-          <button id="copyConfig" class="secondary">Copy config</button>
-          <button id="pasteConfig" class="secondary">Paste config</button>
-        </div>
-        <div id="configMsg" class="config-msg" aria-live="polite"></div>
-      </section>
+      <div class="controls-body">
 
-      <footer class="foot">
-        <span>Space to regenerate · paste a seed to reproduce</span>
-      </footer>
-    </aside>
+        <!-- Header row -->
+        <svg id="collapse-btn" class="header-cell" width="41" height="12" viewBox="0 0 41 12" fill="none" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg" aria-label="Collapse controls">
+          <rect x="32" y="2.44971" width="8.5223" height="2.43092" fill="black"/>
+          <path d="M26.7438 4C26.7262 5.11008 26.5676 6.12324 26.2681 7.03949C25.9685 7.93813 25.5192 8.70461 24.9201 9.33894C24.3386 9.97327 23.625 10.4666 22.7792 10.819C21.9335 11.1538 20.9555 11.3212 19.8455 11.3212C18.753 11.3212 17.7751 11.1538 16.9117 10.819C16.0659 10.4666 15.3523 9.97327 14.7708 9.33894C14.1894 8.68699 13.7489 7.9117 13.4493 7.01307C13.1498 6.11443 13 5.11008 13 4H15.9073C15.925 5.05722 16.0659 5.96466 16.3302 6.72233C16.6122 7.48 17.0438 8.06147 17.6253 8.46673C18.2244 8.85438 18.9733 9.0482 19.8719 9.0482C20.7882 9.0482 21.537 8.85438 22.1185 8.46673C22.7 8.06147 23.1228 7.48 23.3871 6.72233C23.6691 5.96466 23.81 5.05722 23.81 4H26.7438Z" fill="black"/>
+          <circle cx="4.12975" cy="4.12975" r="4.12975" fill="black"/>
+        </svg>
+        <span class="controls-title header-cell">controls</span>
 
-    <section class="stage">
-      <div class="canvas-wrap">
-        <canvas id="canvas"></canvas>
-      </div>
-      <div class="shelf">
-        <div class="shelf-head">
-          <h2>Favorites <span id="favCount" class="value">0 / 24</span></h2>
-          <button id="clearFavs" class="ghost" title="Clear all favorites">clear</button>
+        <!-- Row: background -->
+        <span class="ctrl-label">background</span>
+        <div class="bg-pill" id="bg-pill" style="background:#dfff00"></div>
+
+        <!-- Row: pattern colors -->
+        <span class="ctrl-label">pattern colors</span>
+        <div class="color-swatches" id="color-swatches"></div>
+
+        <!-- Row: grid size + value -->
+        <span class="ctrl-label">grid size</span>
+        <span class="ctrl-value" id="grid-label">24 px</span>
+
+        <!-- Row: Slider (full width) -->
+        <div class="slider-row">
+          <div class="slider-track" id="slider-track">
+            <input type="range" id="grid-size" min="4" max="64" value="24" step="1" />
+            <div class="slider-thumb" id="slider-thumb"></div>
+          </div>
         </div>
-        <div id="favorites" class="favorites">
-          <div class="shelf-empty">No favorites yet — press <kbd>S</kbd> to save the current pattern.</div>
+
+        <!-- Row: tile shape -->
+        <span class="ctrl-label">tile shape</span>
+        <div class="options-scroll" id="tile-shape-scroll"></div>
+
+        <!-- Row: style -->
+        <span class="ctrl-label">style</span>
+        <div class="options-scroll" id="style-scroll"></div>
+
+        <!-- Row 1: randomize (full width) -->
+        <div class="btn-row">
+          <button class="btn btn-full" id="btn-randomize">randomize [space]</button>
         </div>
-      </div>
-    </section>
-  </main>
+
+        <!-- Row 2: generate + save -->
+        <div class="btn-row">
+          <button class="btn btn-half" id="btn-generate">generate [g]</button>
+          <button class="btn btn-half" id="btn-save">save [s]</button>
+        </div>
+
+        <!-- Row 3: copy / png / svg -->
+        <div class="btn-row">
+          <button class="btn btn-export" id="btn-copy">COPY</button>
+          <button class="btn btn-export" id="btn-png">PNG</button>
+          <button class="btn btn-export" id="btn-svg">SVG</button>
+        </div>
+
+      </div><!-- /.controls-body -->
+
+    </div><!-- /.panel-card -->
+
+    <div id="saved-patterns"></div>
+
+  </div><!-- /#panel -->
 
   <script src="app.js"></script>
 </body>

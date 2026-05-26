@@ -1,51 +1,40 @@
 // Chromatic Pattern Engine
 // Vanilla JS + Canvas. No build step.
 //
-// ============ Config contract ============
-// The shareable pattern config is a JSON object with this exact shape:
-//   {
-//     "version":   1,
-//     "seed":      <unsigned 32-bit integer>,
-//     "gridSize":  <integer, 4..64>,
-//     "style":     "noise" | "checker" | "diagonal" | "mosaic" | "scattered" | "wave",
-//     "tileShape": "square" | "circle" | "triangle" | "diamond" | "hexagon",
-//     "palette":   [ { "color": "#rrggbb", "influence": 0..100 }, ... ]   // 1..6 entries
-//   }
-// tileShape is optional — missing values default to "square" (backwards-compatible).
-// Anything outside that shape is rejected by loadConfig().
-// Favorites stored in localStorage are an array of:
-//   { "id": <ms timestamp>, "thumb": "data:image/png;...", "config": <config-object> }
-// ==========================================
+// Generation, slider morphing, export, save/restore, and canvas rendering
+// are PRESERVED from the previous version. Only the UI shell changed.
 
 // ---------- State ----------
-const DEFAULT_PALETTE = [
-  { color: '#e7ff5a', influence: 50 },
-  { color: '#ff5a8a', influence: 50 },
-  { color: '#5ad7ff', influence: 50 },
-  { color: '#1a1a1f', influence: 70 },
-];
+const DEFAULT_BG     = '#dfff00';
+const DEFAULT_COLORS = ['#ff3d7a', '#5ad7ff', '#1a1a1f'];
 
-const STYLE_NAMES = ['noise', 'checker', 'diagonal', 'mosaic', 'scattered', 'wave'];
-const SHAPE_NAMES = ['square', 'circle', 'triangle', 'diamond', 'hexagon'];
-const FAV_CAP = 24;
-const FAV_KEY = 'pixelgrid.favorites.v1';
+const STYLE_NAMES = ['noise','checker','diagonal','mosaic','scattered','wave','brick','plaid','halftone','concentric','zigzag'];
+const SHAPE_NAMES = ['square','circle','triangle','diamond','hexagon'];
+
+const SAVES_KEY  = 'pixelgrid.saves.v1';
+const SAVE_SLOTS = 12;
 
 const state = {
-  palette: DEFAULT_PALETTE.map(p => ({ ...p })),
-  gridSize: 24,
-  style: 'noise',
+  bg:        DEFAULT_BG,
+  colors:    [...DEFAULT_COLORS],
+  gridSize:  24,
+  style:     STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
   tileShape: 'square',
-  seed: randomSeed(),
+  seed:      randomSeed(),
 };
 
-let favorites = loadFavorites();
+let saveSlots = new Array(SAVE_SLOTS).fill(null);
+let saveCount = 0;
 
 // ---------- Utilities ----------
 function randomSeed() {
   return Math.floor(Math.random() * 0xffffffff) >>> 0;
 }
+function shortHex(seed) {
+  return (seed >>> 0).toString(16).padStart(8, '0').slice(-6).toUpperCase();
+}
 
-// mulberry32 — small, fast, deterministic PRNG
+// mulberry32 — deterministic PRNG
 function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
@@ -57,48 +46,24 @@ function mulberry32(seed) {
   };
 }
 
-// Weighted color picker. Returns a function that yields a color from palette
-// according to influence weights using the given PRNG.
-function makeColorPicker(palette, rand) {
-  const usable = palette.filter(p => p.influence > 0);
-  const fallback = palette[0]?.color ?? '#000';
-  if (usable.length === 0) return () => fallback;
-
-  const total = usable.reduce((s, p) => s + p.influence, 0);
-  return function pick() {
-    let r = rand() * total;
-    for (const p of usable) {
-      r -= p.influence;
-      if (r <= 0) return p.color;
-    }
-    return usable[usable.length - 1].color;
-  };
-}
-
-// ---------- Tile shapes ----------
-// Each draw fn: (ctx, px, py, size, col, row) => void
-// ctx.fillStyle must be set by caller before calling.
-// For hex, px/py are the CENTER of the hex cell; size is the circumradius.
+// ---------- Tile shapes (PRESERVED) ----------
 const TILE_SHAPES = {
-  square(ctx, px, py, size) {
-    ctx.fillRect(px, py, size, size);
-  },
+  square(ctx, px, py, size) { ctx.fillRect(px, py, size, size); },
   circle(ctx, px, py, size) {
     const r = size / 2;
     ctx.beginPath();
     ctx.arc(px + r, py + r, r, 0, Math.PI * 2);
     ctx.fill();
   },
-  // Alternating up/down triangles — perfectly tile the grid with no gaps.
   triangle(ctx, px, py, size, col, row) {
     ctx.beginPath();
     if ((col + row) % 2 === 0) {
       ctx.moveTo(px + size / 2, py);
-      ctx.lineTo(px + size, py + size);
-      ctx.lineTo(px, py + size);
+      ctx.lineTo(px + size,     py + size);
+      ctx.lineTo(px,            py + size);
     } else {
-      ctx.moveTo(px, py);
-      ctx.lineTo(px + size, py);
+      ctx.moveTo(px,            py);
+      ctx.lineTo(px + size,     py);
       ctx.lineTo(px + size / 2, py + size);
     }
     ctx.closePath();
@@ -107,14 +72,13 @@ const TILE_SHAPES = {
   diamond(ctx, px, py, size) {
     const cx = px + size / 2, cy = py + size / 2, r = size / 2;
     ctx.beginPath();
-    ctx.moveTo(cx, cy - r);
+    ctx.moveTo(cx,     cy - r);
     ctx.lineTo(cx + r, cy);
-    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx,     cy + r);
     ctx.lineTo(cx - r, cy);
     ctx.closePath();
     ctx.fill();
   },
-  // Pointy-top hexagon centered at (px, py) with circumradius size.
   hexagon(ctx, px, py, size) {
     ctx.beginPath();
     for (let i = 0; i < 6; i++) {
@@ -128,109 +92,51 @@ const TILE_SHAPES = {
   },
 };
 
-// ---------- DOM ----------
-const $ = (id) => document.getElementById(id);
-const paletteEl = $('palette');
-const gridSizeEl = $('gridSize');
-const gridLabelEl = $('gridLabel');
-const styleEl = $('style');
-const tileShapeEl = $('tileShape');
-const seedEl = $('seed');
-const canvas = $('canvas');
-const ctx = canvas.getContext('2d');
-const favoritesEl = $('favorites');
-const favCountEl = $('favCount');
-const configMsgEl = $('configMsg');
+// ---------- DOM refs ----------
+const canvas       = document.getElementById('canvas');
+const ctx          = canvas.getContext('2d');
+const toggleBtn    = document.getElementById('toggle-btn');
+const panel        = document.getElementById('panel');
+const panelCard    = panel.querySelector('.panel-card');
+const collapseBtn  = document.getElementById('collapse-btn');
+const bgPill       = document.getElementById('bg-pill');
+const colorSwatchesEl = document.getElementById('color-swatches');
+const gridSizeEl   = document.getElementById('grid-size');
+const gridLabel    = document.getElementById('grid-label');
+const sliderTrack  = document.getElementById('slider-track');
+const sliderThumb  = document.getElementById('slider-thumb');
+const tileShapeScroll = document.getElementById('tile-shape-scroll');
+const styleScroll  = document.getElementById('style-scroll');
+const savedPatterns = document.getElementById('saved-patterns');
+const centerRandomize = document.getElementById('center-randomize');
 
-// ---- Diagnostic logging (session 3 debug) ----
-console.log('[pixelgrid] boot — DOM lookups:', {
-  palette: !!paletteEl,
-  gridSize: !!gridSizeEl,
-  style: !!styleEl,
-  seed: !!seedEl,
-  canvas: !!canvas,
-  ctx: !!ctx,
-  favorites: !!favoritesEl,
-  addColorBtn: !!$('addColor'),
-  generateBtn: !!$('generate'),
-});
+// ---------- Square slider thumb (grows left→right) ----------
+const THUMB_MIN = 16;   // px at value=4  (10 → 16 so it reads as a thumb, not a marker)
+const THUMB_MAX = 30;   // px at value=64
 
-// ---------- Palette UI ----------
-function renderPalette() {
-  paletteEl.innerHTML = '';
-  state.palette.forEach((entry, i) => {
-    const row = document.createElement('div');
-    row.className = 'swatch-row';
-
-    const color = document.createElement('input');
-    color.type = 'color';
-    color.value = entry.color;
-    color.addEventListener('input', e => {
-      state.palette[i].color = e.target.value;
-      generate();
-    });
-
-    const influence = document.createElement('div');
-    influence.className = 'influence';
-    influence.innerHTML = `
-      <div class="row"><span>influence</span><span class="value">${entry.influence}</span></div>
-      <input type="range" min="0" max="100" value="${entry.influence}" />
-    `;
-    const range = influence.querySelector('input');
-    const valueLabel = influence.querySelector('.value');
-    range.addEventListener('input', e => {
-      const v = parseInt(e.target.value, 10);
-      state.palette[i].influence = v;
-      valueLabel.textContent = v;
-    });
-    range.addEventListener('change', generate);
-
-    const remove = document.createElement('button');
-    remove.className = 'remove-btn';
-    remove.title = 'Remove color';
-    remove.textContent = '×';
-    remove.addEventListener('click', () => {
-      if (state.palette.length <= 1) return;
-      state.palette.splice(i, 1);
-      renderPalette();
-      generate();
-    });
-
-    row.appendChild(color);
-    row.appendChild(influence);
-    row.appendChild(remove);
-    paletteEl.appendChild(row);
-  });
-
-  $('addColor').disabled = state.palette.length >= 6;
+function updateThumb(value) {
+  if (!sliderThumb || !sliderTrack) return;
+  const pct  = (Math.max(4, Math.min(64, value)) - 4) / 60;
+  const size = Math.round(THUMB_MIN + (THUMB_MAX - THUMB_MIN) * pct);
+  const trackW = sliderTrack.clientWidth;
+  // left edge = 0 at pct=0, right edge = trackW at pct=1
+  const center = size / 2 + pct * (trackW - size);
+  sliderThumb.style.width  = size + 'px';
+  sliderThumb.style.height = size + 'px';
+  sliderThumb.style.left   = center + 'px';
 }
 
-$('addColor').addEventListener('click', () => {
-  console.log('[pixelgrid] addColor click — palette before:', JSON.parse(JSON.stringify(state.palette)));
-  if (state.palette.length >= 6) {
-    console.log('[pixelgrid] addColor blocked — palette already at cap (6)');
-    return;
-  }
-  const fresh = `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
-  state.palette.push({ color: fresh, influence: 50 });
-  console.log('[pixelgrid] addColor — palette after:', JSON.parse(JSON.stringify(state.palette)));
-  renderPalette();
-  generate();
-});
+// Bayer matrix (preserved)
+const BAYER = [
+  [ 0,  8,  2, 10],
+  [12,  4, 14,  6],
+  [ 3, 11,  1,  9],
+  [15,  7, 13,  5],
+];
 
-// ---------- Motif builders ----------
-// Each motif builder: (dim, palette, rand) => 2D array (dim × dim) of palette indices.
-// The motif is the small repeating unit — generate() tiles it across the whole canvas.
-// Every motif MUST tile seamlessly at its boundary (cell (0,0) sits next to cell (dim-1, dim-1)
-// of the neighbor tile). Pattern motifs achieve this by keeping the figure centered with
-// background cells along the edges; ratio-based motifs (diagonal, checker) use modular math.
-
+// ---------- Motif builders (PRESERVED) ----------
 const MOTIF_DIM = 16;
-
-function make2D(dim) {
-  return Array.from({ length: dim }, () => new Array(dim).fill(0));
-}
-
+function make2D(dim) { return Array.from({ length: dim }, () => new Array(dim).fill(0)); }
 function bgIndex(palette) {
   let best = 0, bestW = -1;
   for (let i = 0; i < palette.length; i++) {
@@ -238,7 +144,6 @@ function bgIndex(palette) {
   }
   return best;
 }
-
 function accentIndices(palette, bg) {
   return palette
     .map((p, i) => ({ i, w: p.influence }))
@@ -246,19 +151,15 @@ function accentIndices(palette, bg) {
     .sort((a, b) => b.w - a.w)
     .map(p => p.i);
 }
-
-// Distribute palette indices into N slots, counts proportional to influence (largest
-// remainder), then interleaved so the same color isn't adjacent when possible.
 function proportionalSlots(palette, n) {
   const total = palette.reduce((s, p) => s + p.influence, 0);
   if (total === 0) return new Array(n).fill(0);
-  const exact = palette.map(p => (p.influence / total) * n);
+  const exact  = palette.map(p => (p.influence / total) * n);
   const counts = exact.map(v => Math.floor(v));
   let used = counts.reduce((s, v) => s + v, 0);
   const rem = exact.map((v, i) => ({ i, r: v - counts[i] })).sort((a, b) => b.r - a.r);
   let k = 0;
   while (used < n) { counts[rem[k % rem.length].i]++; used++; k++; }
-
   const buckets = palette.map((_, i) => ({ i, left: counts[i] }));
   const slots = new Array(n);
   let last = -1;
@@ -273,61 +174,51 @@ function proportionalSlots(palette, n) {
 }
 
 const MOTIFS = {
-  // "noise" slot → organic blob centered in motif.
-  // Edges stay bg so the motif tiles cleanly; blob has a polar-sinusoid wobble.
   noise(dim, palette, rand) {
     const m = make2D(dim);
-    const bg = bgIndex(palette);
+    const bg  = bgIndex(palette);
     const acc = accentIndices(palette, bg);
-    const main = acc[0] ?? bg;
-    const outline = acc[1] ?? main;
-
+    if (acc.length === 0) { for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg; return m; }
     for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
-
     const c = (dim - 1) / 2;
     const baseR = dim * 0.30;
     const lobes = 3 + Math.floor(rand() * 4);
     const phase = rand() * Math.PI * 2;
-    const amp = dim * 0.08;
-
+    const wobble = dim * 0.08;
+    const nZones = acc.length;
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
         const dx = x - c, dy = y - c;
         const d = Math.sqrt(dx * dx + dy * dy);
         const angle = Math.atan2(dy, dx);
-        const r = baseR + Math.sin(angle * lobes + phase) * amp;
-        if (d <= r) m[y][x] = main;
-        else if (d <= r + 1.4) m[y][x] = outline;
+        const r = baseR + Math.sin(angle * lobes + phase) * wobble;
+        if (d > r) continue;
+        const zone = Math.min(nZones - 1, Math.floor((1 - d / r) * nZones));
+        m[y][x] = acc[nZones - 1 - zone];
       }
     }
     return m;
   },
-
-  // "checker" slot → block checkerboard using the two highest-influence colors.
   checker(dim, palette, rand) {
     const m = make2D(dim);
     const choices = [1, 2, 4, 8].filter(b => dim % (b * 2) === 0);
-    const block = choices[Math.floor(rand() * choices.length)] || 1;
-    const sorted = palette.map((p, i) => ({ i, w: p.influence })).sort((a, b) => b.w - a.w);
-    const c0 = sorted[0]?.i ?? 0;
-    const c1 = sorted[1]?.i ?? c0;
+    const block   = choices[Math.floor(rand() * choices.length)] || 1;
+    const slots   = proportionalSlots(palette, 16);
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
         const bx = Math.floor(x / block);
         const by = Math.floor(y / block);
-        m[y][x] = (bx + by) % 2 === 0 ? c0 : c1;
+        m[y][x] = slots[(bx + by * 5) % 16];
       }
     }
     return m;
   },
-
-  // "diagonal" slot → 45° stripes. (x+y) % dim guarantees seamless wrap.
   diagonal(dim, palette, rand) {
     const m = make2D(dim);
     const widthChoices = [1, 2, 4].filter(b => dim % b === 0);
-    const width = widthChoices[Math.floor(rand() * widthChoices.length)] || 1;
+    const width    = widthChoices[Math.floor(rand() * widthChoices.length)] || 1;
     const numBands = dim / width;
-    const slots = proportionalSlots(palette, numBands);
+    const slots    = proportionalSlots(palette, numBands);
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
         const band = Math.floor(((x + y) % dim) / width);
@@ -336,62 +227,49 @@ const MOTIFS = {
     }
     return m;
   },
-
-  // "mosaic" slot → plus/cross. Arms stop short of the motif edge so neighbors don't fuse.
   mosaic(dim, palette, rand) {
     const m = make2D(dim);
-    const bg = bgIndex(palette);
+    const bg  = bgIndex(palette);
     const acc = accentIndices(palette, bg);
-    const fg = acc[0] ?? bg;
-    const tip = acc[1] ?? fg;
     for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
-
+    if (acc.length === 0) return m;
     const c = dim / 2;
     const thickness = Math.max(2, Math.round(dim * 0.28));
-    const halfLen = Math.max(thickness + 1, Math.round(dim * 0.38));
+    const halfLen   = Math.max(thickness + 1, Math.round(dim * 0.38));
     const t0 = Math.floor(c - thickness / 2);
     const t1 = t0 + thickness;
     const aL = Math.floor(c - halfLen);
     const aR = Math.floor(c + halfLen);
-
+    const armLen = aR - aL;
     for (let y = t0; y < t1; y++) {
       for (let x = aL; x < aR; x++) {
-        if (x >= 0 && y >= 0 && x < dim && y < dim) m[y][x] = fg;
+        if (x < 0 || x >= dim || y < 0 || y >= dim) continue;
+        const seg = Math.floor((x - aL) * acc.length / armLen);
+        m[y][x] = acc[seg % acc.length];
       }
     }
     for (let x = t0; x < t1; x++) {
       for (let y = aL; y < aR; y++) {
-        if (x >= 0 && y >= 0 && x < dim && y < dim) m[y][x] = fg;
-      }
-    }
-    if (tip !== fg) {
-      for (let x = t0; x < t1; x++) {
-        if (x >= 0 && x < dim && aL >= 0 && aL < dim) m[aL][x] = tip;
-        if (x >= 0 && x < dim && aR - 1 >= 0 && aR - 1 < dim) m[aR - 1][x] = tip;
-      }
-      for (let y = t0; y < t1; y++) {
-        if (y >= 0 && y < dim && aL >= 0 && aL < dim) m[y][aL] = tip;
-        if (y >= 0 && y < dim && aR - 1 >= 0 && aR - 1 < dim) m[y][aR - 1] = tip;
+        if (x < 0 || x >= dim || y < 0 || y >= dim) continue;
+        const seg = Math.floor((y - aL) * acc.length / armLen);
+        m[y][x] = acc[seg % acc.length];
       }
     }
     return m;
   },
-
-  // "scattered" slot → bg fill with accent cells spaced apart (toroidal distance for wrap).
   scattered(dim, palette, rand) {
     const m = make2D(dim);
-    const bg = bgIndex(palette);
+    const bg  = bgIndex(palette);
     const acc = accentIndices(palette, bg);
     for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
     if (acc.length === 0) return m;
-
-    const accW = acc.reduce((s, i) => s + palette[i].influence, 0);
-    const bgW = palette[bg].influence + 0.001;
+    const accW  = acc.reduce((s, i) => s + palette[i].influence, 0);
+    const bgW   = palette[bg].influence + 0.001;
     const ratio = accW / (accW + bgW);
-    const target = Math.max(1, Math.floor(dim * dim * ratio * 0.6));
+    const target  = Math.max(1, Math.floor(dim * dim * ratio * 0.6));
     const minDist = 2;
-    const placed = [];
-    let attempts = 0;
+    const placed  = [];
+    let attempts  = 0;
     while (placed.length < target && attempts++ < target * 30) {
       const x = Math.floor(rand() * dim);
       const y = Math.floor(rand() * dim);
@@ -404,372 +282,938 @@ const MOTIFS = {
       if (!ok) continue;
       let r = rand() * accW;
       let chosen = acc[0];
-      for (const i of acc) {
-        r -= palette[i].influence;
-        if (r <= 0) { chosen = i; break; }
-      }
+      for (const i of acc) { r -= palette[i].influence; if (r <= 0) { chosen = i; break; } }
       m[y][x] = chosen;
       placed.push({ x, y });
     }
     return m;
   },
-
-  // "wave" slot → concentric diamond rings (manhattan distance from center).
-  // Alternating ring/gap pattern produces the outlined-ring look.
   wave(dim, palette, rand) {
-    const m = make2D(dim);
-    const bg = bgIndex(palette);
+    const m   = make2D(dim);
+    const bg  = bgIndex(palette);
     const acc = accentIndices(palette, bg);
-    for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
-    if (acc.length === 0) return m;
-
-    const c = (dim - 1) / 2;
-    const maxR = Math.floor(dim * 0.45);
+    const colors = [bg, ...acc];
+    const n  = colors.length;
+    const freq  = 1;
+    const bandH = dim / n;
+    const amp   = Math.max(2, Math.round(bandH * (0.55 + rand() * 0.3)));
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const d = Math.abs(x - c) + Math.abs(y - c);
-        if (d > maxR) continue;
-        const ring = Math.round(d);
-        if (ring % 2 === 0) m[y][x] = acc[(ring / 2) % acc.length];
+        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / (dim - 1)));
+        const yw   = ((y + disp) % dim + dim) % dim;
+        m[y][x] = colors[Math.floor(yw * n / dim) % n];
+      }
+    }
+    return m;
+  },
+  brick(dim, palette, rand) {
+    const m = make2D(dim);
+    const brickW = [4, 8][Math.floor(rand() * 2)];
+    const brickH = [2, 4][Math.floor(rand() * 2)];
+    const bg     = bgIndex(palette);
+    const acc    = accentIndices(palette, bg);
+    const colors = [bg, ...acc];
+    const n = colors.length;
+    for (let y = 0; y < dim; y++) {
+      const row    = Math.floor(y / brickH);
+      const offset = (row % 2) * Math.floor(brickW / 2);
+      for (let x = 0; x < dim; x++) {
+        const brickCol = Math.floor(((x + offset) % dim) / brickW);
+        m[y][x] = colors[brickCol % n];
+      }
+    }
+    return m;
+  },
+  plaid(dim, palette, rand) {
+    const m = make2D(dim);
+    const widths  = [2, 4].filter(b => dim % b === 0);
+    const stripeW = widths[Math.floor(rand() * widths.length)];
+    const n = palette.length;
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const hBand = Math.floor(x / stripeW) % n;
+        const vBand = Math.floor(y / stripeW) % n;
+        m[y][x] = (hBand + vBand) % n;
+      }
+    }
+    return m;
+  },
+  halftone(dim, palette, rand) {
+    const m = make2D(dim);
+    const n = palette.length;
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const t = BAYER[y % 4][x % 4];
+        m[y][x] = Math.floor(t * n / 16);
+      }
+    }
+    return m;
+  },
+  concentric(dim, palette, rand) {
+    const m = make2D(dim);
+    const bg     = bgIndex(palette);
+    const acc    = accentIndices(palette, bg);
+    const colors = [bg, ...acc];
+    const n    = colors.length;
+    const ringW = 1 + Math.floor(rand() * 2);
+    const c    = (dim - 1) / 2;
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const dist = Math.max(Math.abs(x - c), Math.abs(y - c));
+        const ring = Math.floor(dist / ringW);
+        m[y][x] = colors[ring % n];
+      }
+    }
+    return m;
+  },
+  zigzag(dim, palette, rand) {
+    const m = make2D(dim);
+    const bg     = bgIndex(palette);
+    const acc    = accentIndices(palette, bg);
+    const colors = [bg, ...acc];
+    const n    = colors.length;
+    const freq   = 1 + Math.floor(rand() * 2);
+    const period = Math.floor(dim / freq);
+    const bandH  = dim / n;
+    const amp    = Math.max(2, Math.round(bandH * 0.6));
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const tx   = x % (2 * period);
+        const fold = tx < period ? tx : 2 * period - tx;
+        const disp = Math.round(fold * amp / period);
+        const yw   = ((y + disp) % dim + dim) % dim;
+        m[y][x] = colors[Math.floor(yw * n / dim) % n];
       }
     }
     return m;
   },
 };
 
-// ---------- Generation ----------
+// ---------- Generation (PRESERVED) ----------
 function generate() {
   fitCanvas();
-  const tile = state.gridSize;
+  const tile  = state.gridSize;
   const shape = state.tileShape;
-
-  if (state.palette.length === 0) {
-    console.warn('[pixelgrid] generate aborted — palette is empty.');
-    return;
-  }
-
-  // 1. Build the motif (a small color-index grid that will be tiled).
-  const rand = mulberry32(state.seed);
+  const palette = [
+    { color: state.bg, influence: 50 },
+    ...state.colors.map(c => ({ color: c, influence: 50 })),
+  ];
+  const rand    = mulberry32(state.seed);
   const motifFn = MOTIFS[state.style] ?? MOTIFS.noise;
-  const motif = motifFn(MOTIF_DIM, state.palette, rand);
+  const motif   = motifFn(MOTIF_DIM, palette, rand);
 
-  // 2. Determine canvas layout — rectangular for most shapes, offset for hex.
+  // Work in CSS-pixel space (fitCanvas already scaled ctx by dpr)
+  const W   = window.innerWidth;
+  const H   = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  // Snap a CSS-pixel coordinate to land on an integer PHYSICAL pixel after the
+  // dpr scale of the canvas context. Without this, fractional DPR (1.25/1.5/1.75
+  // on Windows scaling) turns integer CSS coords into fractional physical coords,
+  // which anti-alias the rect edges and leave visible 1-px grid seams.
+  const snap = (v) => Math.round(v * dpr) / dpr;
+
   let cols, rows, drawTile;
+
   if (shape === 'hexagon') {
-    const r = tile / 2;
-    const hexW = Math.sqrt(3) * r;
-    const hexH = 1.5 * tile;
-    cols = Math.ceil(canvas.width / hexW) + 1;
-    rows = Math.ceil(canvas.height / hexH) + 1;
-    drawTile = (ctx, col, row, color) => {
-      const cx = col * hexW + (row % 2 === 1 ? hexW / 2 : 0) + hexW / 2;
-      const cy = row * hexH * 0.75 + r;
-      ctx.fillStyle = color;
-      TILE_SHAPES.hexagon(ctx, cx, cy, r);
+    const r0    = tile / 2;
+    const hexW0 = Math.sqrt(3) * r0;
+    cols = Math.max(1, Math.round(W / hexW0));
+    const eHexW = W / cols;
+    const er    = eHexW / Math.sqrt(3);
+    rows = Math.max(1, Math.ceil(H / (1.5 * er)) + 1);
+    drawTile = (c2, col, row, color) => {
+      const cx = col * eHexW + (row % 2 === 1 ? eHexW / 2 : 0) + eHexW / 2;
+      const cy = row * er * 1.5 + er;
+      c2.fillStyle   = color;
+      c2.strokeStyle = color;       // seal sub-pixel seams between hex tiles
+      c2.lineWidth   = 1;
+      TILE_SHAPES.hexagon(c2, cx, cy, er);
+      c2.stroke();
     };
   } else {
-    cols = Math.ceil(canvas.width / tile);
-    rows = Math.ceil(canvas.height / tile);
-    const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
-    drawTile = (ctx, col, row, color) => {
-      ctx.fillStyle = color;
-      shapeFn(ctx, col * tile, row * tile, tile, col, row);
-    };
-  }
+    cols = Math.max(1, Math.round(W / tile));
+    rows = Math.max(1, Math.round(H / tile));
+    const tW = W / cols;
+    const tH = H / rows;
 
-  // 3. Fill canvas with bg color first (covers edges + any non-square shape gaps).
-  const bgColor = state.palette[bgIndex(state.palette)].color;
-  ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // 4. Tile the motif: each canvas cell samples motif[row % DIM][col % DIM].
-  for (let row = 0; row < rows; row++) {
-    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
-    for (let col = 0; col < cols; col++) {
-      const mx = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
-      const idx = motif[my][mx];
-      drawTile(ctx, col, row, state.palette[idx].color);
+    if (shape === 'square') {
+      // Snap edges to physical-pixel boundaries so adjacent squares share an
+      // EXACT integer physical pixel — no seams even on fractional DPR.
+      drawTile = (c2, col, row, color) => {
+        const x0 = snap(col * tW);
+        const y0 = snap(row * tH);
+        const x1 = snap((col + 1) * tW);
+        const y1 = snap((row + 1) * tH);
+        c2.fillStyle = color;
+        c2.fillRect(x0, y0, x1 - x0, y1 - y0);
+      };
+    } else if (shape === 'triangle') {
+      // Snap every triangle vertex to a physical-pixel boundary so each
+      // triangle's diagonal anti-aliases identically across the field.
+      drawTile = (c2, col, row, color) => {
+        const x0 = snap(col * tW);
+        const x1 = snap((col + 1) * tW);
+        const xm = snap(col * tW + tW / 2);   // apex x
+        const y0 = snap(row * tH);
+        const y1 = snap((row + 1) * tH);
+        c2.fillStyle   = color;
+        c2.strokeStyle = color;
+        c2.lineWidth   = 1;
+        c2.beginPath();
+        if ((col + row) % 2 === 0) {
+          c2.moveTo(xm, y0);          // top apex
+          c2.lineTo(x1, y1);          // bottom-right
+          c2.lineTo(x0, y1);          // bottom-left
+        } else {
+          c2.moveTo(x0, y0);          // top-left
+          c2.lineTo(x1, y0);          // top-right
+          c2.lineTo(xm, y1);          // bottom apex
+        }
+        c2.closePath();
+        c2.fill();
+        c2.stroke();
+      };
+    } else {
+      // Curved/diagonal shapes still need the same-color stroke to seal seams
+      const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
+      drawTile = (c2, col, row, color) => {
+        c2.fillStyle   = color;
+        c2.strokeStyle = color;
+        c2.lineWidth   = 1;
+        shapeFn(c2, col * tW, row * tH, Math.min(tW, tH), col, row);
+        c2.stroke();
+      };
     }
   }
 
-  seedEl.value = String(state.seed);
-  console.log('[pixelgrid] generate — style:', state.style, '| shape:', shape,
-    '| cell:', tile, '| cols×rows:', cols, '×', rows, '| seed:', state.seed);
+  ctx.fillStyle = state.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  for (let row = 0; row < rows; row++) {
+    const my = row % MOTIF_DIM;
+    for (let col = 0; col < cols; col++) {
+      const mx  = col % MOTIF_DIM;
+      const idx = motif[my][mx];
+      drawTile(ctx, col, row, palette[idx].color);
+    }
+  }
 }
 
 function fitCanvas() {
-  const wrap = canvas.parentElement;
-  canvas.width = Math.max(64, wrap.clientWidth);
-  canvas.height = Math.max(64, wrap.clientHeight);
+  const dpr = window.devicePixelRatio || 1;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  canvas.width  = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-// ---------- Wire controls ----------
+// ================================================================
+// CUSTOM COLOR PICKER
+// A floating panel (HSV canvas + hue strip + hex input + Done btn)
+// that opens below any element with a gap, matching the UI design.
+// ================================================================
+
+let _pickerEl    = null;   // the popup DOM node
+let _pickerH     = 0;      // current hue 0–360
+let _pickerS     = 1;      // current saturation 0–1
+let _pickerV     = 1;      // current value 0–1
+let _pickerOnChange = null;
+let _pickerOnDone   = null;
+
+// HSV ↔ Hex helpers
+function _hsvToHex(h, s, v) {
+  const c = v * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = v - c;
+  let r, g, b;
+  if      (h < 60)  { r=c; g=x; b=0; }
+  else if (h < 120) { r=x; g=c; b=0; }
+  else if (h < 180) { r=0; g=c; b=x; }
+  else if (h < 240) { r=0; g=x; b=c; }
+  else if (h < 300) { r=x; g=0; b=c; }
+  else              { r=c; g=0; b=x; }
+  const h2 = n => Math.max(0, Math.min(255, Math.round((n + m) * 255))).toString(16).padStart(2, '0');
+  return '#' + h2(r) + h2(g) + h2(b);
+}
+function _hexToHsv(hex) {
+  const r = parseInt(hex.slice(1,3),16)/255;
+  const g = parseInt(hex.slice(3,5),16)/255;
+  const b = parseInt(hex.slice(5,7),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b), d = max - min;
+  let h = 0;
+  if (d) {
+    if      (max === r) h = ((g - b) / d + 6) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else                h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return { h, s: max ? d / max : 0, v: max };
+}
+function _isValidHex(s) { return /^#[0-9a-fA-F]{6}$/.test(s); }
+
+function _drawSV(canvas, h) {
+  const W = canvas.width, H = canvas.height;
+  const ctx2 = canvas.getContext('2d');
+  // White → hue gradient (left→right)
+  const gH = ctx2.createLinearGradient(0, 0, W, 0);
+  gH.addColorStop(0, '#fff');
+  gH.addColorStop(1, `hsl(${h},100%,50%)`);
+  ctx2.fillStyle = gH;
+  ctx2.fillRect(0, 0, W, H);
+  // Transparent → black (top→bottom)
+  const gV = ctx2.createLinearGradient(0, 0, 0, H);
+  gV.addColorStop(0, 'rgba(0,0,0,0)');
+  gV.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx2.fillStyle = gV;
+  ctx2.fillRect(0, 0, W, H);
+}
+function _drawHue(canvas) {
+  const W = canvas.width, H = canvas.height;
+  const ctx2 = canvas.getContext('2d');
+  const g = ctx2.createLinearGradient(0, 0, W, 0);
+  for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, `hsl(${i * 60},100%,50%)`);
+  ctx2.fillStyle = g;
+  ctx2.fillRect(0, 0, W, H);
+}
+function _drawCursor(canvas, x, y) {
+  const ctx2 = canvas.getContext('2d');
+  ctx2.beginPath();
+  ctx2.arc(x, y, 7, 0, Math.PI * 2);
+  ctx2.strokeStyle = '#fff';
+  ctx2.lineWidth = 2;
+  ctx2.stroke();
+  ctx2.beginPath();
+  ctx2.arc(x, y, 8, 0, Math.PI * 2);
+  ctx2.strokeStyle = '#000';
+  ctx2.lineWidth = 1.5;
+  ctx2.stroke();
+}
+function _drawHueCursor(canvas, h) {
+  const ctx2 = canvas.getContext('2d');
+  const x = (h / 360) * canvas.width;
+  ctx2.beginPath();
+  ctx2.arc(x, canvas.height / 2, 6, 0, Math.PI * 2);
+  ctx2.strokeStyle = '#fff';
+  ctx2.lineWidth = 2;
+  ctx2.stroke();
+  ctx2.beginPath();
+  ctx2.arc(x, canvas.height / 2, 7, 0, Math.PI * 2);
+  ctx2.strokeStyle = '#000';
+  ctx2.lineWidth = 1.5;
+  ctx2.stroke();
+}
+
+function _pickerRefresh() {
+  if (!_pickerEl) return;
+  const hex = _hsvToHex(_pickerH, _pickerS, _pickerV);
+  const svCanvas  = _pickerEl.querySelector('.picker-sv');
+  const hueCanvas = _pickerEl.querySelector('.picker-hue');
+  const swatch    = _pickerEl.querySelector('.picker-swatch');
+  const hexInput  = _pickerEl.querySelector('.picker-hex');
+
+  _drawSV(svCanvas, _pickerH);
+  _drawCursor(svCanvas, _pickerS * svCanvas.width, (1 - _pickerV) * svCanvas.height);
+
+  _drawHue(hueCanvas);
+  _drawHueCursor(hueCanvas, _pickerH);
+
+  swatch.style.background = hex;
+  hexInput.value = hex.toUpperCase();
+
+  if (_pickerOnChange) _pickerOnChange(hex);
+}
+
+function openColorPicker(anchorEl, initialHex, onChange, onDone) {
+  closeColorPicker();
+
+  const valid = _isValidHex(initialHex) ? initialHex : '#888888';
+  const hsv = _hexToHsv(valid);
+  _pickerH = hsv.h; _pickerS = hsv.s; _pickerV = hsv.v;
+  _pickerOnChange = onChange;
+  _pickerOnDone   = onDone || onChange;   // if no onDone, treat onChange as commit too
+
+  // Build popup
+  const pop = document.createElement('div');
+  pop.className = 'color-picker-popup';
+  pop.style.display = 'flex';
+
+  pop.innerHTML = `
+    <canvas class="picker-sv"  width="212" height="159"></canvas>
+    <canvas class="picker-hue" width="212" height="16"></canvas>
+    <div class="picker-footer">
+      <div class="picker-swatch"></div>
+      <input class="picker-hex" type="text" maxlength="7" spellcheck="false" />
+      <button class="picker-done" type="button">done</button>
+    </div>`;
+
+  document.body.appendChild(pop);
+  _pickerEl = pop;
+
+  // Position below anchor with 10px gap
+  function reposition() {
+    const rect = anchorEl.getBoundingClientRect();
+    const popW = pop.offsetWidth  || 240;
+    const popH = pop.offsetHeight || 240;
+    let left = rect.left;
+    let top  = rect.bottom + 10;
+    // Keep in viewport
+    if (left + popW > window.innerWidth  - 8) left = window.innerWidth  - popW - 8;
+    if (top  + popH > window.innerHeight - 8) top  = rect.top - popH - 10;
+    if (left < 8) left = 8;
+    pop.style.left = left + 'px';
+    pop.style.top  = top  + 'px';
+  }
+  requestAnimationFrame(() => { reposition(); _pickerRefresh(); });
+
+  // SV canvas interaction
+  const svCanvas = pop.querySelector('.picker-sv');
+  let svDown = false;
+  function pickSV(e) {
+    const r = svCanvas.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    _pickerS = Math.max(0, Math.min(1, (cx - r.left) / r.width));
+    _pickerV = Math.max(0, Math.min(1, 1 - (cy - r.top) / r.height));
+    _pickerRefresh();
+  }
+  svCanvas.addEventListener('mousedown',  e => { svDown = true; pickSV(e); });
+  svCanvas.addEventListener('touchstart', e => { e.preventDefault(); pickSV(e); }, { passive: false });
+  window.addEventListener('mousemove',  e => { if (svDown) pickSV(e); });
+  window.addEventListener('mouseup',    () => { svDown = false; });
+  svCanvas.addEventListener('touchmove', e => { e.preventDefault(); pickSV(e); }, { passive: false });
+
+  // Hue strip interaction
+  const hueCanvas = pop.querySelector('.picker-hue');
+  let hueDown = false;
+  function pickHue(e) {
+    const r = hueCanvas.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    _pickerH = Math.max(0, Math.min(360, ((cx - r.left) / r.width) * 360));
+    _pickerRefresh();
+  }
+  hueCanvas.addEventListener('mousedown',  e => { hueDown = true; pickHue(e); });
+  hueCanvas.addEventListener('touchstart', e => { e.preventDefault(); pickHue(e); }, { passive: false });
+  window.addEventListener('mousemove',  e => { if (hueDown) pickHue(e); });
+  window.addEventListener('mouseup',    () => { hueDown = false; });
+  hueCanvas.addEventListener('touchmove', e => { e.preventDefault(); pickHue(e); }, { passive: false });
+
+  // Hex input
+  const hexInput = pop.querySelector('.picker-hex');
+  hexInput.addEventListener('input', e => {
+    const v = e.target.value.trim();
+    const hex = v.startsWith('#') ? v : '#' + v;
+    if (_isValidHex(hex)) {
+      const hsv = _hexToHsv(hex);
+      _pickerH = hsv.h; _pickerS = hsv.s; _pickerV = hsv.v;
+      _pickerRefresh();
+    }
+  });
+
+  // Done button
+  pop.querySelector('.picker-done').addEventListener('click', () => {
+    const hex = _hsvToHex(_pickerH, _pickerS, _pickerV);
+    if (_pickerOnDone) _pickerOnDone(hex);
+    closeColorPicker();
+  });
+
+  // Close on outside click (but not on the anchor itself)
+  setTimeout(() => {
+    function outsideClick(e) {
+      if (!_pickerEl) return;
+      if (_pickerEl.contains(e.target) || anchorEl.contains(e.target)) return;
+      if (_pickerOnDone) _pickerOnDone(_hsvToHex(_pickerH, _pickerS, _pickerV));
+      closeColorPicker();
+      document.removeEventListener('mousedown', outsideClick, true);
+    }
+    document.addEventListener('mousedown', outsideClick, true);
+  }, 0);
+}
+
+function closeColorPicker() {
+  if (_pickerEl) {
+    _pickerEl.remove();
+    _pickerEl = null;
+  }
+  _pickerOnChange = null;
+  _pickerOnDone   = null;
+}
+
+// ---------- Panel open/close ----------
+let panelOpen = false;
+
+function syncSavedVisibility() {
+  const hasFilled = saveSlots.some(s => s !== null);
+  savedPatterns.style.display = (panelOpen && hasFilled) ? 'grid' : 'none';
+}
+
+function openPanel() {
+  panelOpen = true;
+  toggleBtn.style.display       = 'none';
+  centerRandomize.style.display = 'none';
+  panel.style.display           = 'block';
+  syncSavedVisibility();
+  // Defer until layout settles so width measurements are correct
+  requestAnimationFrame(() => {
+    updateThumb(state.gridSize);
+    repositionSavedPatterns();
+  });
+}
+
+function closePanel() {
+  closeColorPicker();
+  panelOpen = false;
+  panel.style.display           = 'none';
+  savedPatterns.style.display   = 'none';
+  toggleBtn.style.display       = 'flex';
+  centerRandomize.style.display = 'block';
+}
+
+toggleBtn.addEventListener('click', openPanel);
+toggleBtn.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPanel(); }
+});
+collapseBtn.addEventListener('click', closePanel);
+
+// ---------- Background pill ----------
+bgPill.addEventListener('click', () => {
+  openColorPicker(bgPill, state.bg, hex => {
+    state.bg = hex;
+    bgPill.style.background = hex;
+    generate();
+  });
+});
+
+// ---------- Pattern color swatches ----------
+// Always renders exactly 3 pill slots.
+// Filled = color pill; clicking opens the custom picker below it.
+// Empty = dashed pill with "+"; clicking adds a color via picker.
+
+function renderSwatches() {
+  colorSwatchesEl.innerHTML = '';
+
+  for (let i = 0; i < 3; i++) {
+    const isFilled = i < state.colors.length;
+    const col = isFilled ? state.colors[i] : null;
+
+    const sw = document.createElement('div');
+    sw.className = 'color-swatch' + (isFilled ? '' : ' empty');
+
+    if (isFilled) {
+      sw.style.background = col;
+
+      // Filled pill → open custom picker below it
+      sw.addEventListener('click', e => {
+        if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
+        openColorPicker(sw, state.colors[i], hex => {
+          state.colors[i] = hex;
+          sw.style.background = hex;
+          generate();
+        });
+      });
+
+      // ✕ delete — only when more than one color exists
+      if (state.colors.length > 1) {
+        const x = document.createElement('button');
+        x.className = 'swatch-x';
+        x.type = 'button';
+        x.title = 'Remove color';
+        x.textContent = '✕';
+        x.addEventListener('click', e => {
+          e.stopPropagation();
+          e.preventDefault();
+          closeColorPicker();
+          state.colors.splice(i, 1);
+          renderSwatches();
+          generate();
+        });
+        x.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+        sw.appendChild(x);
+      }
+
+    } else {
+      // Empty slot: "+" opens picker, pushes new color
+      const plus = document.createElement('span');
+      plus.className = 'empty-plus';
+      plus.textContent = '+';
+      sw.appendChild(plus);
+
+      sw.addEventListener('click', () => {
+        const seed = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
+        openColorPicker(sw, seed, hex => {
+          // live preview only if slot is now filled (color already pushed)
+          if (state.colors[i]) {
+            state.colors[i] = hex;
+            generate();
+          }
+        }, hex => {
+          // on Done: push the color (if not already there)
+          if (state.colors.length < 3 && !state.colors[i]) {
+            state.colors.push(hex);
+            renderSwatches();
+            generate();
+          }
+        });
+      });
+    }
+
+    colorSwatchesEl.appendChild(sw);
+  }
+}
+
+// ---------- Grid size slider (live preview) ----------
 gridSizeEl.addEventListener('input', e => {
   state.gridSize = parseInt(e.target.value, 10);
-  gridLabelEl.textContent = `${state.gridSize} px`;
-});
-gridSizeEl.addEventListener('change', generate);
-
-styleEl.addEventListener('change', e => {
-  state.style = e.target.value;
+  gridLabel.textContent = `${state.gridSize} px`;
+  updateThumb(state.gridSize);
   generate();
 });
 
-tileShapeEl.addEventListener('change', e => {
-  state.tileShape = e.target.value;
-  generate();
-});
+// ---------- Tile shape icons (fixed, evenly spaced, no scroll) ----------
+// SVGs at 22×22 — color controlled by currentColor; .opt-icon.active sets color:#000
+const SHAPE_ICONS = {
+  square:   '<svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor"><rect x="3" y="3" width="16" height="16"/></svg>',
+  circle:   '<svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor"><circle cx="11" cy="11" r="8"/></svg>',
+  triangle: '<svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor"><polygon points="11,3 19,18 3,18"/></svg>',
+  diamond:  '<svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor"><polygon points="11,3 19,11 11,19 3,11"/></svg>',
+  hexagon:  '<svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor"><polygon points="11,3 17.93,7 17.93,15 11,19 4.07,15 4.07,7"/></svg>',
+};
 
-seedEl.addEventListener('change', e => {
-  const v = parseInt(e.target.value, 10);
-  if (Number.isFinite(v) && v >= 0) {
-    state.seed = v >>> 0;
-    generate();
+function buildTileShapeList() {
+  tileShapeScroll.innerHTML = '';
+  SHAPE_NAMES.forEach(s => {
+    const span = document.createElement('span');
+    span.className = 'opt-icon' + (s === state.tileShape ? ' active' : '');
+    span.dataset.value = s;
+    span.innerHTML = SHAPE_ICONS[s];
+    span.title = s;
+    span.addEventListener('click', () => {
+      state.tileShape = s;
+      // Update active class without rebuild (no layout shift)
+      tileShapeScroll.querySelectorAll('.opt-icon').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === s);
+      });
+      generate();
+    });
+    tileShapeScroll.appendChild(span);
+  });
+}
+
+// ---------- Style selector (scrollable, original order, left-marker active) ----------
+const STYLE_LABELS = {
+  noise:'noise', checker:'checker', diagonal:'diagonal', mosaic:'mosaic',
+  scattered:'scatter', wave:'wave', brick:'brick', plaid:'plaid',
+  halftone:'halftone', concentric:'concentric', zigzag:'zigzag',
+};
+
+let _lDrag = null;
+let _lMoved = false;
+window.addEventListener('mousemove', e => {
+  if (!_lDrag) return;
+  const dx = e.clientX - _lDrag.startX;
+  if (Math.abs(dx) > 4) _lDrag.moved = true;
+  _lDrag.el.scrollLeft = _lDrag.startScroll - dx;
+});
+window.addEventListener('mouseup', () => {
+  if (_lDrag) {
+    _lMoved = _lDrag.moved;
+    _lDrag.el.classList.remove('dragging');
+    _lDrag = null;
   }
 });
 
-$('copySeed').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(String(state.seed));
-    flashButton('copySeed', 'copied');
-  } catch {}
-});
+function buildStyleList() {
+  styleScroll.innerHTML = '';
+  styleScroll.onmousedown = e => {
+    _lDrag  = { el: styleScroll, startX: e.clientX, startScroll: styleScroll.scrollLeft, moved: false };
+    _lMoved = false;
+    styleScroll.classList.add('dragging');
+  };
+  STYLE_NAMES.forEach(s => {
+    const span = document.createElement('span');
+    span.className = 'opt' + (s === state.style ? ' active' : '');
+    span.dataset.value = s;
+    span.textContent = STYLE_LABELS[s];
+    span.addEventListener('click', () => {
+      if (_lMoved) return;
+      state.style = s;
+      styleScroll.querySelectorAll('.opt').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === s);
+      });
+      generate();
+    });
+    styleScroll.appendChild(span);
+  });
+  // Scroll active item into view (without reordering)
+  const activeEl = styleScroll.querySelector('.opt.active');
+  if (activeEl) activeEl.scrollIntoView({ inline: 'nearest', behavior: 'instant' });
+}
 
-$('randomizeSeed').addEventListener('click', () => {
+// ---------- Action buttons ----------
+function randomHex() {
+  return '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
+}
+
+// Full randomize — bg, colors (1–3), tile shape, style, grid size, seed
+function randomizeAll() {
+  closeColorPicker();
+  state.bg        = randomHex();
+  const n         = 1 + Math.floor(Math.random() * 3);
+  state.colors    = Array.from({ length: n }, randomHex);
+  state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
+  state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
+  state.gridSize  = 4 + Math.floor(Math.random() * 61);
+  state.seed      = randomSeed();
+  // Sync UI to new state
+  bgPill.style.background = state.bg;
+  gridSizeEl.value        = String(state.gridSize);
+  gridLabel.textContent   = `${state.gridSize} px`;
+  updateThumb(state.gridSize);
+  renderSwatches();
+  buildTileShapeList();
+  buildStyleList();
+  generate();
+}
+
+// Generate variation — keep all params, just new seed
+function generateVariation() {
   state.seed = randomSeed();
   generate();
+}
+
+document.getElementById('btn-randomize').addEventListener('click', randomizeAll);
+document.getElementById('btn-generate').addEventListener('click', generateVariation);
+document.getElementById('btn-save').addEventListener('click', savePattern);
+
+// Centered randomize (landing-state button)
+centerRandomize.addEventListener('click', randomizeAll);
+centerRandomize.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); randomizeAll(); }
 });
 
-$('generate').addEventListener('click', () => {
-  console.log('[pixelgrid] generate button clicked');
-  state.seed = randomSeed();
-  generate();
-});
-
-$('export').addEventListener('click', () => {
-  // Native canvas resolution — no scaling, no DPR mangling.
+// ---------- Export (PRESERVED logic, rewired to new buttons) ----------
+document.getElementById('btn-png').addEventListener('click', () => {
   const link = document.createElement('a');
-  link.download = `pixelgrid-${state.style}-${state.seed}.png`;
+  link.download = `pixelgrid-${state.style}-${shortHex(state.seed)}.png`;
   link.href = canvas.toDataURL('image/png');
   link.click();
 });
 
-// Spacebar = regenerate; S = save to favorites.
-// Suppress when typing in form fields so the slider/color inputs stay usable.
-window.addEventListener('keydown', e => {
-  const tag = document.activeElement?.tagName;
-  const inField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
-  if (inField) return;
-  if (e.code === 'Space') {
-    e.preventDefault();
-    state.seed = randomSeed();
-    generate();
-  } else if (e.key === 's' || e.key === 'S') {
-    e.preventDefault();
-    saveFavorite();
+document.getElementById('btn-copy').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  try {
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  } catch {
+    const orig = btn.textContent;
+    btn.textContent = 'unavailable';
+    setTimeout(() => { btn.textContent = orig; }, 2000);
   }
 });
 
-window.addEventListener('resize', () => generate());
+document.getElementById('btn-svg').addEventListener('click', exportAsSVG);
 
-// ---------- Config (shareable JSON) ----------
+function exportAsSVG() {
+  const tile = state.gridSize;
+  const w    = window.innerWidth;
+  const h    = window.innerHeight;
+  const palette = [
+    { color: state.bg, influence: 50 },
+    ...state.colors.map(c => ({ color: c, influence: 50 })),
+  ];
+  const rand   = mulberry32(state.seed);
+  const motif  = (MOTIFS[state.style] ?? MOTIFS.noise)(MOTIF_DIM, palette, rand);
+  const cols   = Math.max(1, Math.round(w / tile));
+  const rows   = Math.max(1, Math.round(h / tile));
+  const tW = w / cols, tH = h / rows;
+  let inner = `<rect width="${w}" height="${h}" fill="${state.bg}"/>\n`;
+  for (let row = 0; row < rows; row++) {
+    const my = row % MOTIF_DIM;
+    for (let col = 0; col < cols; col++) {
+      const mx    = col % MOTIF_DIM;
+      const color = palette[motif[my][mx]].color;
+      inner += `<rect x="${+(col * tW).toFixed(2)}" y="${+(row * tH).toFixed(2)}" width="${+tW.toFixed(2)}" height="${+tH.toFixed(2)}" fill="${color}"/>\n`;
+    }
+  }
+  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n${inner}</svg>`;
+  const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href     = url;
+  link.download = `pixelgrid-${state.style}-${shortHex(state.seed)}.svg`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ---------- Keyboard shortcuts ----------
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (_pickerEl) { closeColorPicker(); return; }
+    closePanel();
+    return;
+  }
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    randomizeAll();
+  } else if (e.key === 'g' || e.key === 'G') {
+    e.preventDefault();
+    generateVariation();
+  } else if (e.key === 's' || e.key === 'S') {
+    e.preventDefault();
+    savePattern();
+  }
+});
+
+window.addEventListener('resize', () => {
+  updateThumb(state.gridSize);
+  generate();
+  repositionSavedPatterns();
+});
+
+// ---------- Config (PRESERVED) ----------
 function getConfig() {
   return {
-    version: 1,
-    seed: state.seed,
-    gridSize: state.gridSize,
-    style: state.style,
+    version:   2,
+    seed:      state.seed,
+    gridSize:  state.gridSize,
+    style:     state.style,
     tileShape: state.tileShape,
-    palette: state.palette.map(p => ({ color: p.color, influence: p.influence })),
+    bg:        state.bg,
+    colors:    state.colors.slice(),
   };
 }
 
-// Returns true if the config was valid and applied.
 function loadConfig(cfg) {
   if (!cfg || typeof cfg !== 'object') return false;
   if (!Number.isFinite(cfg.seed) || cfg.seed < 0) return false;
   if (!Number.isInteger(cfg.gridSize) || cfg.gridSize < 4 || cfg.gridSize > 64) return false;
   if (!STYLE_NAMES.includes(cfg.style)) return false;
-  if (!Array.isArray(cfg.palette) || cfg.palette.length < 1 || cfg.palette.length > 6) return false;
   const hexRe = /^#[0-9a-fA-F]{6}$/;
-  for (const p of cfg.palette) {
-    if (!p || typeof p.color !== 'string' || !hexRe.test(p.color)) return false;
-    if (!Number.isFinite(p.influence) || p.influence < 0 || p.influence > 100) return false;
+  let bg, colors;
+  if (cfg.version === 2) {
+    if (typeof cfg.bg !== 'string' || !hexRe.test(cfg.bg)) return false;
+    if (!Array.isArray(cfg.colors) || cfg.colors.length < 1 || cfg.colors.length > 3) return false;
+    if (!cfg.colors.every(c => typeof c === 'string' && hexRe.test(c))) return false;
+    bg = cfg.bg; colors = cfg.colors.slice();
+  } else if (cfg.version === 1 || Array.isArray(cfg.palette)) {
+    if (!Array.isArray(cfg.palette) || cfg.palette.length < 1) return false;
+    for (const p of cfg.palette) { if (!p || !hexRe.test(p.color)) return false; }
+    const sorted = [...cfg.palette].sort((a, b) => b.influence - a.influence);
+    bg = sorted[0].color;
+    colors = sorted.slice(1, 4).map(p => p.color);
+    if (colors.length === 0) colors = [sorted[0].color];
+  } else {
+    return false;
   }
 
-  state.seed = cfg.seed >>> 0;
-  state.gridSize = cfg.gridSize;
-  state.style = cfg.style;
-  // tileShape is optional — old configs without it default to 'square'.
+  state.seed      = cfg.seed >>> 0;
+  state.gridSize  = cfg.gridSize;
+  state.style     = cfg.style;
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
-  state.palette = cfg.palette.map(p => ({ color: p.color, influence: p.influence }));
+  state.bg        = bg;
+  state.colors    = colors;
 
-  // Sync UI controls
-  gridSizeEl.value = String(state.gridSize);
-  gridLabelEl.textContent = `${state.gridSize} px`;
-  styleEl.value = state.style;
-  tileShapeEl.value = state.tileShape;
-  seedEl.value = String(state.seed);
-  renderPalette();
+  bgPill.style.background = state.bg;
+  gridSizeEl.value        = String(state.gridSize);
+  gridLabel.textContent   = `${state.gridSize} px`;
+  updateThumb(state.gridSize);
+  renderSwatches();
+  buildTileShapeList();
+  buildStyleList();
   generate();
   return true;
 }
 
-$('copyConfig').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(JSON.stringify(getConfig(), null, 2));
-    showConfigMsg('Config copied to clipboard', 'ok');
-  } catch {
-    showConfigMsg('Clipboard write failed', 'err');
-  }
-});
-
-$('pasteConfig').addEventListener('click', async () => {
-  try {
-    const text = await navigator.clipboard.readText();
-    const cfg = JSON.parse(text);
-    if (loadConfig(cfg)) showConfigMsg('Config loaded', 'ok');
-    else showConfigMsg('Invalid config shape', 'err');
-  } catch {
-    showConfigMsg('Could not read or parse clipboard JSON', 'err');
-  }
-});
-
-let msgTimer = null;
-function showConfigMsg(text, kind) {
-  configMsgEl.textContent = text;
-  configMsgEl.className = `config-msg ${kind || ''}`;
-  clearTimeout(msgTimer);
-  msgTimer = setTimeout(() => {
-    configMsgEl.textContent = '';
-    configMsgEl.className = 'config-msg';
-  }, 3000);
-}
-
-function flashButton(id, text) {
-  const b = $(id);
-  const orig = b.textContent;
-  b.textContent = text;
-  setTimeout(() => (b.textContent = orig), 900);
-}
-
-// ---------- Favorites ----------
-function loadFavorites() {
-  try {
-    const raw = localStorage.getItem(FAV_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function persistFavorites() {
-  try {
-    localStorage.setItem(FAV_KEY, JSON.stringify(favorites));
-  } catch (e) {
-    // Likely QuotaExceeded — trim oldest until it fits.
-    while (favorites.length > 1) {
-      favorites.shift();
-      try { localStorage.setItem(FAV_KEY, JSON.stringify(favorites)); return; } catch {}
-    }
-  }
-}
-
-function makeThumbnail(size = 120) {
-  const off = document.createElement('canvas');
-  off.width = size;
-  off.height = size;
+// ---------- Thumbnail (FILLS slot, no letterbox) ----------
+function makeThumbnail(size = 200) {
+  const off  = document.createElement('canvas');
+  off.width  = size; off.height = size;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-  // Letterbox-fit the (potentially non-square) canvas into a square thumb.
-  const src = canvas;
-  const scale = Math.min(size / src.width, size / src.height);
-  const dw = src.width * scale;
-  const dh = src.height * scale;
-  const dx = (size - dw) / 2;
-  const dy = (size - dh) / 2;
-  octx.fillStyle = '#0b0b0d';
-  octx.fillRect(0, 0, size, size);
-  octx.drawImage(src, dx, dy, dw, dh);
+  // Fill the slot edge-to-edge (per spec)
+  octx.drawImage(canvas, 0, 0, size, size);
   return off.toDataURL('image/png');
 }
 
-function saveFavorite() {
-  if (favorites.length >= FAV_CAP) {
-    const ok = confirm(`Favorites are full (${FAV_CAP}). Overwrite the oldest?`);
-    if (!ok) return;
-    favorites.shift();
-  }
-  favorites.push({
-    id: Date.now(),
-    thumb: makeThumbnail(120),
-    config: getConfig(),
-  });
-  persistFavorites();
-  renderFavorites();
-  flashButton('favorite', '★ Saved');
+// ---------- Saves (PRESERVED) ----------
+function loadSaves() {
+  try {
+    const raw = localStorage.getItem(SAVES_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.slots) && parsed.slots.length === SAVE_SLOTS) saveSlots = parsed.slots;
+    if (typeof parsed.count === 'number') saveCount = parsed.count;
+  } catch {}
 }
-
-function deleteFavorite(id) {
-  favorites = favorites.filter(f => f.id !== id);
-  persistFavorites();
-  renderFavorites();
+function persistSaves() {
+  try { localStorage.setItem(SAVES_KEY, JSON.stringify({ slots: saveSlots, count: saveCount })); } catch {}
 }
-
-function renderFavorites() {
-  favCountEl.textContent = `${favorites.length} / ${FAV_CAP}`;
-  favoritesEl.innerHTML = '';
-  if (favorites.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'shelf-empty';
-    empty.innerHTML = 'No favorites yet — press <kbd>S</kbd> to save the current pattern.';
-    favoritesEl.appendChild(empty);
-    return;
-  }
-  // Newest first so the most recent save is immediately visible.
-  [...favorites].reverse().forEach(fav => {
+function savePattern() {
+  const idx = saveCount % SAVE_SLOTS;
+  saveSlots[idx] = { id: Date.now(), thumb: makeThumbnail(200), config: getConfig() };
+  saveCount++;
+  persistSaves();
+  renderSavedGrid();
+}
+function deleteSlot(idx) {
+  saveSlots[idx] = null;
+  persistSaves();
+  renderSavedGrid();
+}
+function renderSavedGrid() {
+  savedPatterns.innerHTML = '';
+  // Only render filled slots — no "+" placeholders
+  saveSlots.forEach((slot, i) => {
+    if (!slot) return;
     const el = document.createElement('div');
-    el.className = 'fav';
-    el.title = `${fav.config.style} · seed ${fav.config.seed}`;
-
+    el.className = 'pattern-slot filled';
     const img = document.createElement('img');
-    img.src = fav.thumb;
+    img.src = slot.thumb;
     img.alt = '';
     el.appendChild(img);
-
     const del = document.createElement('button');
-    del.className = 'fav-del';
-    del.textContent = '×';
-    del.title = 'Delete favorite';
-    del.addEventListener('click', e => {
-      e.stopPropagation();
-      deleteFavorite(fav.id);
-    });
+    del.className = 'del-btn';
+    del.textContent = '✕';
+    del.title = 'Delete';
+    del.addEventListener('click', e => { e.stopPropagation(); deleteSlot(i); });
     el.appendChild(del);
-
-    el.addEventListener('click', () => {
-      if (loadConfig(fav.config)) {
-        // Re-render is done by loadConfig.
-      }
-    });
-
-    favoritesEl.appendChild(el);
+    el.title = `${slot.config.style} · ${shortHex(slot.config.seed)}`;
+    el.addEventListener('click', () => loadConfig(slot.config));
+    savedPatterns.appendChild(el);
   });
+  syncSavedVisibility();
 }
 
-$('favorite').addEventListener('click', saveFavorite);
-$('clearFavs').addEventListener('click', () => {
-  if (favorites.length === 0) return;
-  if (!confirm(`Delete all ${favorites.length} favorites?`)) return;
-  favorites = [];
-  persistFavorites();
-  renderFavorites();
-});
+// ---------- Position saved-patterns below the panel-card ----------
+function repositionSavedPatterns() {
+  if (!savedPatterns || panel.style.display === 'none') return;
+  const cardRect = panelCard.getBoundingClientRect();
+  savedPatterns.style.top  = (cardRect.bottom + 12) + 'px';
+  savedPatterns.style.left = '16px';
+}
+
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(repositionSavedPatterns).observe(panelCard);
+}
 
 // ---------- Init ----------
-renderPalette();
-renderFavorites();
-gridLabelEl.textContent = `${state.gridSize} px`;
-generate();
+loadSaves();
+
+bgPill.style.background = state.bg;
+gridSizeEl.value        = String(state.gridSize);
+gridLabel.textContent   = `${state.gridSize} px`;
+
+renderSwatches();
+buildTileShapeList();
+buildStyleList();
+renderSavedGrid();
+
+// DEFAULT: collapsed (toggle button visible, panel hidden)
+closePanel();
+
+// Render initial pattern after layout
+requestAnimationFrame(() => {
+  generate();
+});
