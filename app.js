@@ -220,6 +220,85 @@ function generateCuratedPalette() {
   return pickBestPalette(_generateCuratedCandidate, 5);
 }
 
+// ---------- Harmony mode ----------
+// Build companion colors in OKLCH space (perceptually uniform hue rotation).
+// Each rule returns [bg, ...accents] where bg is the user-supplied base.
+function _harmonyColors(baseHex, rule) {
+  const base = hexToOklch(baseHex);
+  const accents = [];
+  const L = base.L;
+  const C = Math.max(0.04, base.C);  // floor chroma so near-grey bases still produce visible accents
+  const h = base.h;
+  switch (rule) {
+    case 'complementary':
+      accents.push(oklchToHex(L, C, (h + 180) % 360));
+      accents.push(oklchToHex(_clamp(L * 0.55, 0.15, 0.92), C * 0.85, h));
+      break;
+    case 'analogous':
+      accents.push(oklchToHex(L, C, (h + 30) % 360));
+      accents.push(oklchToHex(L, C, (h - 30 + 360) % 360));
+      accents.push(oklchToHex(_clamp(L * 0.55, 0.15, 0.92), C, h));
+      break;
+    case 'triadic':
+      accents.push(oklchToHex(L, C, (h + 120) % 360));
+      accents.push(oklchToHex(L, C, (h + 240) % 360));
+      // Add a darker variant of the base for contrast safety.
+      accents.push(oklchToHex(_clamp(L * 0.45, 0.15, 0.92), C * 0.9, h));
+      break;
+    case 'split-complementary':
+      accents.push(oklchToHex(L, C, (h + 150) % 360));
+      accents.push(oklchToHex(L, C, (h + 210) % 360));
+      accents.push(oklchToHex(_clamp(L * 0.45, 0.15, 0.92), C * 0.9, h));
+      break;
+    case 'tetradic':
+      accents.push(oklchToHex(L, C, (h + 90) % 360));
+      accents.push(oklchToHex(L, C, (h + 180) % 360));
+      accents.push(oklchToHex(L, C, (h + 270) % 360));
+      break;
+    case 'monochromatic':
+      // Same hue, four different lightness/chroma steps.
+      accents.push(oklchToHex(_clamp(L + 0.25, 0.12, 0.95), C * 0.55, h));
+      accents.push(oklchToHex(_clamp(L - 0.22, 0.10, 0.95), C * 1.15, h));
+      accents.push(oklchToHex(_clamp(L - 0.42, 0.08, 0.95), C * 0.50, h));
+      break;
+    default:
+      accents.push(oklchToHex(L, C, (h + 180) % 360));
+  }
+  return [baseHex, ...accents];
+}
+
+function generateHarmonyPalette(baseHex, rule) {
+  // Validate base; fall back to a sensible default if missing/malformed.
+  const safeBase = /^#[0-9a-fA-F]{6}$/.test(baseHex) ? baseHex : '#3b82f6';
+  // Generate 5 candidates: the exact base + 4 perturbations of the base in
+  // L/C/h. Pick whichever passes the constraint filter best.
+  const candidates = [];
+  // Attempt 1: exact base + rule
+  candidates.push(_harmonyColors(safeBase, rule));
+  // Attempts 2–5: jitter base hue/lightness/chroma slightly
+  const lch = hexToOklch(safeBase);
+  for (let i = 0; i < 4; i++) {
+    const dL = (Math.random() - 0.5) * 0.18;
+    const dC = (Math.random() - 0.5) * 0.06;
+    const dh = (Math.random() - 0.5) * 24;
+    const perturbed = oklchToHex(
+      _clamp(lch.L + dL, 0.15, 0.92),
+      Math.max(0.04, lch.C + dC),
+      (lch.h + dh + 360) % 360,
+    );
+    candidates.push(_harmonyColors(perturbed, rule));
+  }
+  let best = null, bestScore = -Infinity;
+  for (const arr of candidates) {
+    const s = scorePalette(arr);
+    if (s > bestScore) { bestScore = s; best = arr; }
+  }
+  // pickBestPalette-style fallback: if none scored above -Infinity, use the
+  // first candidate anyway so the UI still moves.
+  const chosen = best || candidates[0];
+  return { bg: chosen[0], colors: chosen.slice(1, 4) };
+}
+
 /**
  * Master palette dispatcher. Reads state.paletteMode and routes to the
  * right generator. Always passes through the constraint filter (the
