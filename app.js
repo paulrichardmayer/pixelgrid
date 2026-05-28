@@ -5,8 +5,7 @@
 // are PRESERVED from the previous version. Only the UI shell changed.
 
 // ---------- State ----------
-const DEFAULT_BG     = '#dfff00';
-const DEFAULT_COLORS = ['#ff3d7a', '#5ad7ff', '#1a1a1f'];
+const DEFAULT_COLORS = ['#dfff00', '#ff3d7a', '#5ad7ff', '#1a1a1f'];
 
 const STYLE_NAMES = ['noise','checker','diagonal','mosaic','scattered','wave','brick','plaid','halftone','concentric','zigzag'];
 const SHAPE_NAMES = ['square','circle','triangle','diamond','hexagon'];
@@ -15,10 +14,10 @@ const SAVES_KEY  = 'pixelgrid.saves.v1';
 const SAVE_SLOTS = 12;
 
 const state = {
-  bg:               DEFAULT_BG,
-  bgInfluence:      50,          // weight of the bg color in motif generation (25/50/100/200)
-  colors:           [...DEFAULT_COLORS],
-  colorInfluences:  [50, 50, 50], // per-accent weight, parallel to colors[]
+  // colors[0] = ground color (canvas fill + highest motif influence = 4×).
+  // colors[1..3] = accent colors with decreasing influence: 2×, 1×, 0.5×.
+  // Position = weight — drag swatches to reorder.
+  colors:        [...DEFAULT_COLORS],
   // gridSize = pixels per logical motif cell. Motif is always 16×16 cells,
   // so motif pixel size = 16 * gridSize. Slider range: 4–24 px/cell
   // → motif size 64–384 px.
@@ -54,12 +53,10 @@ function mulberry32(seed) {
   };
 }
 
-// ---------- Color weight levels ----------
-// Four discrete influence steps exposed in the UI (1× … 4×).
-// These feed directly into palette[i].influence, which proportionalSlots()
-// and bgIndex()/accentIndices() use to distribute color across the motif.
-const INFLUENCE_LEVELS = [25, 50, 100, 200];
-const INFLUENCE_LABELS = ['1×', '2×', '3×', '4×'];
+// ---------- Positional color weights ----------
+// Position 0 (ground) = highest influence (4×). Each subsequent position halves.
+// These feed into palette[i].influence for proportionalSlots() and bgIndex().
+const POSITION_WEIGHTS = [200, 100, 50, 25];
 
 // ---------- Contrast safety (WCAG relative luminance) ----------
 function relativeLuminance(hex) {
@@ -142,7 +139,6 @@ const toggleBtn    = document.getElementById('toggle-btn');
 const panel        = document.getElementById('panel');
 const panelCard    = panel.querySelector('.panel-card');
 const collapseBtn  = document.getElementById('collapse-btn');
-const bgPill       = document.getElementById('bg-pill');
 const colorSwatchesEl = document.getElementById('color-swatches');
 const gridSizeEl   = document.getElementById('grid-size');
 const gridLabel    = document.getElementById('grid-label');
@@ -531,10 +527,7 @@ function generate() {
 }
 
 function _currentPalette() {
-  return [
-    { color: state.bg, influence: state.bgInfluence },
-    ...state.colors.map((c, i) => ({ color: c, influence: state.colorInfluences[i] ?? 50 })),
-  ];
+  return state.colors.map((c, i) => ({ color: c, influence: POSITION_WEIGHTS[i] ?? 25 }));
 }
 function _currentMotif() {
   const palette = _currentPalette();
@@ -556,8 +549,8 @@ function renderToContext(c2, opts) {
   const cellPx  = state.gridSize;
   const shape   = state.tileShape;
   // Background fill — covers shape gaps (e.g. corners between adjacent circles)
-  // with the bg palette color so the motif still reads as a unified field.
-  c2.fillStyle = state.bg;
+  // with the ground color so the motif still reads as a unified field.
+  c2.fillStyle = state.colors[0] ?? '#000000';
   c2.fillRect(0, 0, W, H);
 
   if (shape === 'hexagon') {
@@ -1064,48 +1057,18 @@ toggleBtn.addEventListener('keydown', e => {
 });
 collapseBtn.addEventListener('click', closePanel);
 
-// ---------- Background pill ----------
-bgPill.addEventListener('click', e => {
-  if (e.target.classList.contains('swatch-weight') || e.target.closest?.('.swatch-weight')) return;
-  openColorPicker(bgPill, state.bg, hex => {
-    state.bg = hex;
-    bgPill.style.background = hex;
-    generate();
-  });
-});
-
-// Weight badge on bg pill — cycles bgInfluence through 4 levels.
-const bgWeightBtn = document.createElement('button');
-bgWeightBtn.className = 'swatch-weight';
-bgWeightBtn.type = 'button';
-bgWeightBtn.title = 'Background weight — click to cycle (1× low … 4× dominant)';
-function syncBgWeightBtn() {
-  const lvl = INFLUENCE_LEVELS.indexOf(state.bgInfluence);
-  bgWeightBtn.textContent = INFLUENCE_LABELS[lvl >= 0 ? lvl : 1];
-  bgWeightBtn.classList.toggle('modified', state.bgInfluence !== 50);
-}
-syncBgWeightBtn();
-bgWeightBtn.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
-bgWeightBtn.addEventListener('click', e => {
-  e.stopPropagation();
-  e.preventDefault();
-  const cur  = INFLUENCE_LEVELS.indexOf(state.bgInfluence);
-  const next = ((cur < 0 ? 1 : cur) + 1) % INFLUENCE_LEVELS.length;
-  state.bgInfluence = INFLUENCE_LEVELS[next];
-  syncBgWeightBtn();
-  generate();
-});
-bgPill.appendChild(bgWeightBtn);
-
 // ---------- Pattern color swatches ----------
-// Always renders exactly 3 pill slots.
-// Filled = color pill; clicking opens the custom picker below it.
-// Empty = dashed pill with "+"; clicking adds a color via picker.
+// Renders up to 4 pill slots. Position encodes weight: slot 0 = ground (4×),
+// slot 1 = 2×, slot 2 = 1×, slot 3 = 0.5×.
+// Drag filled swatches to reorder (HTML5 drag-and-drop). Slot 0 gets a tooltip
+// explaining it fills the background. Empty slots show a "+" to add colors.
+
+let _dragSrcIdx = null;
 
 function renderSwatches() {
   colorSwatchesEl.innerHTML = '';
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const isFilled = i < state.colors.length;
     const col = isFilled ? state.colors[i] : null;
 
@@ -1114,11 +1077,58 @@ function renderSwatches() {
 
     if (isFilled) {
       sw.style.background = col;
+      sw.draggable = true;
+      if (i === 0) {
+        sw.title = 'Ground color — drag to reorder. First position fills the pattern background and has the most influence.';
+      }
 
-      // Filled pill → open custom picker (guard clicks on weight badge and ✕)
+      // Drag-to-reorder: source events
+      sw.addEventListener('dragstart', e => {
+        _dragSrcIdx = i;
+        e.dataTransfer.effectAllowed = 'move';
+        // Timeout so the dragging class doesn't suppress the drag image
+        requestAnimationFrame(() => sw.classList.add('dragging'));
+      });
+      sw.addEventListener('dragend', () => {
+        sw.classList.remove('dragging');
+        colorSwatchesEl.querySelectorAll('.color-swatch').forEach(el => {
+          el.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        _dragSrcIdx = null;
+      });
+
+      // Drag-to-reorder: target events
+      sw.addEventListener('dragover', e => {
+        if (_dragSrcIdx === null || _dragSrcIdx === i) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = sw.getBoundingClientRect();
+        const before = e.clientX < rect.left + rect.width / 2;
+        sw.classList.toggle('drag-over-left',  before);
+        sw.classList.toggle('drag-over-right', !before);
+      });
+      sw.addEventListener('dragleave', () => {
+        sw.classList.remove('drag-over-left', 'drag-over-right');
+      });
+      sw.addEventListener('drop', e => {
+        e.preventDefault();
+        if (_dragSrcIdx === null || _dragSrcIdx === i) return;
+        sw.classList.remove('drag-over-left', 'drag-over-right');
+        const rect = sw.getBoundingClientRect();
+        const insertBefore = e.clientX < rect.left + rect.width / 2;
+        const moved = state.colors.splice(_dragSrcIdx, 1)[0];
+        // After removal, adjust target index if source was before it (array shifted left)
+        let targetIdx = _dragSrcIdx < i ? i - 1 : i;
+        if (!insertBefore) targetIdx++;
+        targetIdx = Math.max(0, Math.min(state.colors.length, targetIdx));
+        state.colors.splice(targetIdx, 0, moved);
+        renderSwatches();
+        generate();
+      });
+
+      // Click to edit color (guard clicks on ✕)
       sw.addEventListener('click', e => {
-        if (e.target.classList.contains('swatch-x')      || e.target.closest?.('.swatch-x'))      return;
-        if (e.target.classList.contains('swatch-weight') || e.target.closest?.('.swatch-weight')) return;
+        if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         openColorPicker(sw, state.colors[i], hex => {
           state.colors[i] = hex;
           sw.style.background = hex;
@@ -1138,33 +1148,12 @@ function renderSwatches() {
           e.preventDefault();
           closeColorPicker();
           state.colors.splice(i, 1);
-          state.colorInfluences.splice(i, 1);   // keep parallel array in sync
           renderSwatches();
           generate();
         });
         x.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
         sw.appendChild(x);
       }
-
-      // Weight badge — cycles colorInfluences[i] through 4 discrete levels.
-      const wb = document.createElement('button');
-      wb.className = 'swatch-weight' + (state.colorInfluences[i] !== 50 ? ' modified' : '');
-      wb.type = 'button';
-      wb.title = 'Color weight — click to cycle (1× low … 4× dominant)';
-      const wbLvl = INFLUENCE_LEVELS.indexOf(state.colorInfluences[i] ?? 50);
-      wb.textContent = INFLUENCE_LABELS[wbLvl >= 0 ? wbLvl : 1];
-      wb.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
-      wb.addEventListener('click', e => {
-        e.stopPropagation();
-        e.preventDefault();
-        const cur  = INFLUENCE_LEVELS.indexOf(state.colorInfluences[i] ?? 50);
-        const next = ((cur < 0 ? 1 : cur) + 1) % INFLUENCE_LEVELS.length;
-        state.colorInfluences[i] = INFLUENCE_LEVELS[next];
-        wb.textContent = INFLUENCE_LABELS[next];
-        wb.classList.toggle('modified', INFLUENCE_LEVELS[next] !== 50);
-        generate();
-      });
-      sw.appendChild(wb);
 
     } else {
       // Empty slot: "+" opens picker, pushes new color
@@ -1183,8 +1172,7 @@ function renderSwatches() {
           }
         }, hex => {
           // on Done: push the color (if not already there)
-          if (state.colors.length < 3 && !state.colors[i]) {
-            state.colorInfluences.push(50);   // default weight for new color
+          if (state.colors.length < 4 && !state.colors[i]) {
             state.colors.push(hex);
             renderSwatches();
             generate();
@@ -1290,17 +1278,15 @@ function randomHex() {
   return '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
 }
 
-// Full randomize — bg, colors (1–3), tile shape, style, grid size, seed
+// Full randomize — colors (2–4), tile shape, style, grid size, seed
 function randomizeAll() {
   closeColorPicker();
-  state.bg             = randomHex();
-  state.bgInfluence    = 50;   // reset weights to equal on full randomize
-  const n              = 1 + Math.floor(Math.random() * 3);
-  state.colors         = Array.from({ length: n }, randomHex);
-  state.colorInfluences = new Array(n).fill(50);
-  // Contrast safety: nudge each accent's lightness until it's visibly distinct
-  // from the background (ratio ≥ 2.5:1). Prevents invisible near-monochromatic palettes.
-  state.colors = state.colors.map(c => ensureMinContrast(state.bg, c));
+  const n      = 2 + Math.floor(Math.random() * 3);   // 2–4 colors total
+  const ground = randomHex();
+  // Contrast safety: nudge each accent until visibly distinct from ground (ratio ≥ 2.5:1).
+  // Prevents invisible near-monochromatic palettes.
+  const accents = Array.from({ length: n - 1 }, () => ensureMinContrast(ground, randomHex()));
+  state.colors    = [ground, ...accents];
   state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
   state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
   // Randomize scale within the 4–24 px/cell range — but NOT while tile preview
@@ -1308,12 +1294,10 @@ function randomizeAll() {
   if (!state.previewRepeat) {
     state.gridSize = SCALE_MIN + Math.floor(Math.random() * (SCALE_MAX - SCALE_MIN + 1));
   }
-  state.seed      = randomSeed();
+  state.seed = randomSeed();
   // Sync UI to new state
-  syncBgWeightBtn();
-  bgPill.style.background = state.bg;
-  gridSizeEl.value        = String(state.gridSize);
-  gridLabel.textContent   = `${state.gridSize} px/cell`;
+  gridSizeEl.value      = String(state.gridSize);
+  gridLabel.textContent = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1397,7 +1381,7 @@ function exportAsSVG() {
 
   const { palette, motif } = _currentMotif();
 
-  let inner = `<rect width="${outW}" height="${outH}" fill="${state.bg}"/>\n`;
+  let inner = `<rect width="${outW}" height="${outH}" fill="${state.colors[0]}"/>\n`;
   for (let row = 0; row < cellsY; row++) {
     const my = row % MOTIF_DIM;
     for (let col = 0; col < cellsX; col++) {
@@ -1446,15 +1430,12 @@ window.addEventListener('resize', () => {
 // ---------- Config (PRESERVED) ----------
 function getConfig() {
   return {
-    version:          2,
-    seed:             state.seed,
-    gridSize:         state.gridSize,
-    style:            state.style,
-    tileShape:        state.tileShape,
-    bg:               state.bg,
-    bgInfluence:      state.bgInfluence,
-    colors:           state.colors.slice(),
-    colorInfluences:  state.colorInfluences.slice(),
+    version:   3,
+    seed:      state.seed,
+    gridSize:  state.gridSize,
+    style:     state.style,
+    tileShape: state.tileShape,
+    colors:    state.colors.slice(),  // 1–4 items; position 0 = ground color
   };
 }
 
@@ -1464,19 +1445,25 @@ function loadConfig(cfg) {
   if (!Number.isInteger(cfg.gridSize) || cfg.gridSize < 4 || cfg.gridSize > 64) return false;
   if (!STYLE_NAMES.includes(cfg.style)) return false;
   const hexRe = /^#[0-9a-fA-F]{6}$/;
-  let bg, colors;
-  if (cfg.version === 2) {
+  let colors;
+  if (cfg.version === 3) {
+    // v3: unified colors[] array; position 0 is the ground color.
+    if (!Array.isArray(cfg.colors) || cfg.colors.length < 1 || cfg.colors.length > 4) return false;
+    if (!cfg.colors.every(c => typeof c === 'string' && hexRe.test(c))) return false;
+    colors = cfg.colors.slice();
+  } else if (cfg.version === 2) {
+    // v2: separate bg + colors[]. Migrate: ground = bg, accents = colors.
     if (typeof cfg.bg !== 'string' || !hexRe.test(cfg.bg)) return false;
     if (!Array.isArray(cfg.colors) || cfg.colors.length < 1 || cfg.colors.length > 3) return false;
     if (!cfg.colors.every(c => typeof c === 'string' && hexRe.test(c))) return false;
-    bg = cfg.bg; colors = cfg.colors.slice();
+    colors = [cfg.bg, ...cfg.colors];
   } else if (cfg.version === 1 || Array.isArray(cfg.palette)) {
+    // v1: palette array sorted by influence. Highest = ground, rest = accents.
     if (!Array.isArray(cfg.palette) || cfg.palette.length < 1) return false;
     for (const p of cfg.palette) { if (!p || !hexRe.test(p.color)) return false; }
     const sorted = [...cfg.palette].sort((a, b) => b.influence - a.influence);
-    bg = sorted[0].color;
-    colors = sorted.slice(1, 4).map(p => p.color);
-    if (colors.length === 0) colors = [sorted[0].color];
+    colors = sorted.slice(0, 4).map(p => p.color);
+    if (colors.length === 0) return false;
   } else {
     return false;
   }
@@ -1486,20 +1473,10 @@ function loadConfig(cfg) {
   state.gridSize  = Math.max(SCALE_MIN, Math.min(SCALE_MAX, cfg.gridSize));
   state.style     = cfg.style;
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
-  state.bg        = bg;
   state.colors    = colors;
-  // Restore influences — fall back to 50 for old saves that don't have them.
-  const validInf  = v => Number.isFinite(v) && v > 0;
-  state.bgInfluence    = validInf(cfg.bgInfluence) ? cfg.bgInfluence : 50;
-  state.colorInfluences = colors.map((_, i) =>
-    Array.isArray(cfg.colorInfluences) && validInf(cfg.colorInfluences[i])
-      ? cfg.colorInfluences[i] : 50
-  );
 
-  bgPill.style.background = state.bg;
-  syncBgWeightBtn();
-  gridSizeEl.value        = String(state.gridSize);
-  gridLabel.textContent   = `${state.gridSize} px/cell`;
+  gridSizeEl.value      = String(state.gridSize);
+  gridLabel.textContent = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1585,9 +1562,8 @@ if (typeof ResizeObserver !== 'undefined') {
 // ---------- Init ----------
 loadSaves();
 
-bgPill.style.background = state.bg;
-gridSizeEl.value        = String(state.gridSize);
-gridLabel.textContent   = `${state.gridSize} px/cell`;
+gridSizeEl.value      = String(state.gridSize);
+gridLabel.textContent = `${state.gridSize} px/cell`;
 
 renderSwatches();
 buildTileShapeList();

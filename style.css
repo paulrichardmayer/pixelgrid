@@ -17,7 +17,6 @@ button,
 .opt, .opt-icon,
 .color-swatch, .color-add,
 .pattern-slot, .pattern-slot .del-btn,
-.bg-pill,
 #toggle-btn, #collapse-btn, #center-randomize,
 .picker-sv, .picker-hue, .picker-done, .swatch-x,
 input[type="range"] {
@@ -108,7 +107,7 @@ html, body {
   font-family: 'Host Grotesk', sans-serif;
   font-weight: 600;
   z-index: 90;
-  /* IMPORTANT: keep overflow visible so the bg pill can bleed right */
+  /* IMPORTANT: keep overflow visible so the color picker popup can overflow */
   overflow: visible;
   display: none;
 }
@@ -120,7 +119,7 @@ html, body {
   box-shadow: 0 4px 24px rgba(0,0,0,0.16);
   padding: 20px;
   box-sizing: border-box;
-  /* DO NOT set overflow: hidden — pill must bleed past padding */
+  /* DO NOT set overflow: hidden — color picker popup must be able to overflow */
 }
 
 /* ── Single grid that contains header + all rows so the
@@ -200,21 +199,6 @@ html, body {
   color: #000;
 }
 
-/* ── Background pill — bleeds OUTSIDE the floating UI ──
-   panel-card padding-right = 20, border = 8 → 28px to reach panel's outer edge.
-   We extend an extra 32px past that, so the pill visibly bleeds onto the page bg. */
-.bg-pill {
-  display: block;
-  height: 28px;
-  border-radius: 100px;
-  border: 5px solid #000;
-  cursor: pointer;
-  width: 100%;
-  grid-column: 2;
-  position: relative;
-  z-index: 2;
-}
-
 /* ── Pattern color swatches ──
    Each pill has its own ✕ on hover (only when >1). An inline + slot
    appears at the end of the row when colors < 3. */
@@ -292,38 +276,11 @@ html, body {
 .color-swatch:hover .swatch-x { display: flex; }
 .color-swatch .swatch-x:hover { filter: brightness(1.1); }
 
-/* ── Weight badge — shows/cycles color influence level (1× … 4×) ──
-   Positioned at the bottom-center of each swatch pill, always visible
-   when non-default (.modified) or on hover. */
-.swatch-weight {
-  position: absolute;
-  bottom: -6px;
-  left: 50%;
-  transform: translateX(-50%);
-  min-width: 20px;
-  height: 14px;
-  border-radius: 100px;
-  background: #000;
-  color: #fff;
-  font-family: 'Host Grotesk', sans-serif;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  padding: 0 5px;
-  border: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  z-index: 4;
-  opacity: 0;
-  transition: opacity 0.12s;
-  white-space: nowrap;
-}
-.color-swatch:hover .swatch-weight,
-.bg-pill:hover .swatch-weight { opacity: 1; }
-.swatch-weight.modified { opacity: 1; }   /* always show when weight is non-default */
-.swatch-weight:hover { background: #FF3131; }
+/* ── Drag-to-reorder swatches ── */
+.color-swatch[draggable="true"] { cursor: grab; }
+.color-swatch.dragging { opacity: 0.35; }
+.color-swatch.drag-over-left  { box-shadow: -3px 0 0 0 #FF3131; }
+.color-swatch.drag-over-right { box-shadow:  3px 0 0 0 #FF3131; }
 
 /* Inline "add color" slot — same width as a swatch, dashed grey, "+" inside */
 .color-add {
