@@ -482,9 +482,12 @@ function generate() {
     renderPreviewRepeat();
     return;
   }
+  // Render into the full padded canvas (W + 2×margin) so overdraw tiles that
+  // straddle the viewport edge are drawn completely — no arc/corner clipping.
+  const margin = state.gridSize;
   renderToContext(ctx, {
-    W:   window.innerWidth,
-    H:   window.innerHeight,
+    W:   window.innerWidth  + margin * 2,
+    H:   window.innerHeight + margin * 2,
     dpr: window.devicePixelRatio || 1,
     overdraw: true,
   });
@@ -584,22 +587,22 @@ function _renderSquareCells(c2, motif, palette, cellPx, cellsX, cellsY, dpr, ori
       const r  = cellPx / 2;
       const cx = originX + col * cellPx + cellPx / 2;
       const cy = originY + row * cellPx + cellPx / 2;
-      c2.fillStyle   = color;
-      c2.strokeStyle = color;
-      c2.lineWidth   = 1;
+      c2.fillStyle = color;
       c2.beginPath();
       c2.arc(cx, cy, r, 0, Math.PI * 2);
       c2.fill();
-      c2.stroke();
+      // No stroke: a same-color lineWidth=1 stroke bleeds 0.5px outside the arc
+      // (beyond r = cellPx/2), making circles visually exceed their cell boundary
+      // and causing edge-clipping artifacts. Fill alone gives a clean anti-aliased edge.
     };
   } else {
+    // Diamond (and any future shape added to TILE_SHAPES).
+    // No stroke: a same-color stroke bleeds 0.5px outside the path, painting
+    // the shape color into the background gap between tiles.
     const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
     drawTile = (col, row, color) => {
-      c2.fillStyle   = color;
-      c2.strokeStyle = color;
-      c2.lineWidth   = 1;
+      c2.fillStyle = color;
       shapeFn(c2, originX + col * cellPx, originY + row * cellPx, cellPx, col, row);
-      c2.stroke();
     };
   }
 
@@ -646,22 +649,27 @@ function _renderHexagons(c2, motif, palette, cellPx, W, H, dpr, overdraw) {
  * lines on the motif boundaries so the user can verify seamless tiling.
  */
 function renderPreviewRepeat() {
-  const W = window.innerWidth;
-  const H = window.innerHeight;
-  const dpr = window.devicePixelRatio || 1;
+  const W      = window.innerWidth;
+  const H      = window.innerHeight;
+  const margin = state.gridSize;
+  // Canvas is (W + 2×margin) × (H + 2×margin), offset by (-margin, -margin).
+  // All drawing coordinates are in canvas space: viewport (0,0) = canvas (margin, margin).
+  const cW     = W + margin * 2;
+  const cH     = H + margin * 2;
+  const dpr    = window.devicePixelRatio || 1;
   const cellPx  = state.gridSize;
   const motifPx = MOTIF_DIM * cellPx;
   const REPEAT  = 3;
   const totalPx = REPEAT * motifPx;
   const { palette, motif } = _currentMotif();
 
-  // Neutral dark backdrop so the motif unit reads as a contained sample.
+  // Neutral dark backdrop — fill the full padded canvas so no margin strip is left bare.
   ctx.fillStyle = '#1a1a1f';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, cW, cH);
 
-  // Center 3×3 grid in viewport
-  const startX = Math.round((W - totalPx) / 2);
-  const startY = Math.round((H - totalPx) / 2);
+  // Center 3×3 grid in the full canvas (= visually centered in viewport)
+  const startX = Math.round((cW - totalPx) / 2);
+  const startY = Math.round((cH - totalPx) / 2);
 
   if (state.tileShape === 'hexagon') {
     // Hex preview: render the hex grid clipped to the preview square. The
@@ -733,13 +741,24 @@ function buildExportCanvas() {
 }
 
 function fitCanvas() {
-  const dpr = window.devicePixelRatio || 1;
-  const W = window.innerWidth;
-  const H = window.innerHeight;
-  canvas.width  = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
-  canvas.style.width  = W + 'px';
-  canvas.style.height = H + 'px';
+  const dpr    = window.devicePixelRatio || 1;
+  const W      = window.innerWidth;
+  const H      = window.innerHeight;
+  // Extend the canvas by one cell on every side so non-square tile shapes
+  // (circles, diamonds) whose geometry reaches the cell boundary are never
+  // clipped by the canvas edge. The canvas is positioned at (-margin, -margin)
+  // in viewport space; the browser's viewport naturally hides the overflow.
+  const margin = state.gridSize;
+  const cW     = W + margin * 2;
+  const cH     = H + margin * 2;
+  canvas.width        = Math.round(cW * dpr);
+  canvas.height       = Math.round(cH * dpr);
+  canvas.style.width  = cW + 'px';
+  canvas.style.height = cH + 'px';
+  canvas.style.left   = -margin + 'px';
+  canvas.style.top    = -margin + 'px';
+  canvas.style.right  = 'auto';
+  canvas.style.bottom = 'auto';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
