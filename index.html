@@ -52,8 +52,11 @@
         <span class="controls-title header-cell">controls</span>
 
         <!-- Row: tile-preview toggle (verify motif tiles seamlessly) -->
-        <span class="ctrl-label" id="preview-label"><svg class="tile-preview-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="4" height="4" fill="currentColor"/><rect x="6" y="0" width="4" height="4" fill="currentColor"/><rect x="12" y="0" width="4" height="4" fill="currentColor"/><rect x="0" y="6" width="4" height="4" fill="currentColor"/><rect x="6" y="6" width="4" height="4" fill="currentColor"/><rect x="12" y="6" width="4" height="4" fill="currentColor"/><rect x="0" y="12" width="4" height="4" fill="currentColor"/><rect x="6" y="12" width="4" height="4" fill="currentColor"/><rect x="12" y="12" width="4" height="4" fill="currentColor"/><line x1="4.5" y1="0" x2="4.5" y2="16" stroke="#FF3131" stroke-width="1"/><line x1="10.5" y1="0" x2="10.5" y2="16" stroke="#FF3131" stroke-width="1"/><line x1="0" y1="4.5" x2="16" y2="4.5" stroke="#FF3131" stroke-width="1"/><line x1="0" y1="10.5" x2="16" y2="10.5" stroke="#FF3131" stroke-width="1"/></svg>tile preview</span>
-        <button type="button" class="preview-toggle" id="preview-repeat" aria-pressed="false">off</button>
+        <span class="ctrl-label">tile preview</span>
+        <div class="preview-controls">
+          <button type="button" class="preview-toggle" id="preview-repeat" aria-pressed="false">off</button>
+          <button type="button" class="preview-toggle" id="preview-grid" aria-pressed="true" hidden>grid on</button>
+        </div>
 
         <!-- Row: pattern colors -->
         <span class="ctrl-label">pattern colors</span>

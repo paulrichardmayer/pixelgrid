@@ -27,7 +27,8 @@ const state = {
   seed:          randomSeed(),
   // When true, render the motif as a 3×3 tile preview with thin guide lines
   // marking motif boundaries so seamless tiling can be verified.
-  previewRepeat: false,
+  previewRepeat: false,  // 3×3 tile preview mode
+  previewGrid:   true,   // show red guide lines inside tile preview
 };
 
 let saveSlots = new Array(SAVE_SLOTS).fill(null);
@@ -717,25 +718,27 @@ function renderPreviewRepeat() {
       REPEAT * MOTIF_DIM, REPEAT * MOTIF_DIM, dpr, startX, startY);
   }
 
-  // Guide lines at motif boundaries (red, 1.5 px). Half-pixel offset so the
-  // stroke sits cleanly on integer pixels rather than spreading 0.5 each side.
-  ctx.strokeStyle = 'rgba(255, 49, 49, 0.95)';
-  ctx.lineWidth   = 1.5;
-  for (let i = 1; i < REPEAT; i++) {
-    const px = Math.round(startX + i * motifPx) + 0.5;
-    const py = Math.round(startY + i * motifPx) + 0.5;
-    ctx.beginPath();
-    ctx.moveTo(px, startY);
-    ctx.lineTo(px, startY + totalPx);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(startX, py);
-    ctx.lineTo(startX + totalPx, py);
-    ctx.stroke();
+  // Guide lines at motif boundaries — only when grid overlay is on.
+  // Half-pixel offset so the stroke sits cleanly on integer pixels.
+  if (state.previewGrid) {
+    ctx.strokeStyle = 'rgba(255, 49, 49, 0.95)';
+    ctx.lineWidth   = 1.5;
+    for (let i = 1; i < REPEAT; i++) {
+      const px = Math.round(startX + i * motifPx) + 0.5;
+      const py = Math.round(startY + i * motifPx) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(px, startY);
+      ctx.lineTo(px, startY + totalPx);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(startX, py);
+      ctx.lineTo(startX + totalPx, py);
+      ctx.stroke();
+    }
+    // Outer border around the 3×3 block
+    ctx.lineWidth = 2;
+    ctx.strokeRect(startX + 0.5, startY + 0.5, totalPx - 1, totalPx - 1);
   }
-  // Outer border around the 3×3 block
-  ctx.lineWidth = 2;
-  ctx.strokeRect(startX + 0.5, startY + 0.5, totalPx - 1, totalPx - 1);
 }
 
 /**
@@ -1168,6 +1171,7 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
     zIndex:        '1000',
   });
   document.body.appendChild(ghost);
+  document.body.classList.add('swatch-dragging');
 
   // Placeholder: invisible element that occupies space in the flex row,
   // styled with a red dashed border to mark the drop target.
@@ -1202,6 +1206,7 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup',   onUp);
     ghost.remove();
+    document.body.classList.remove('swatch-dragging');
 
     // Count filled swatches before placeholder → that's the final insert index.
     const children = [...colorSwatchesEl.children];
@@ -1240,6 +1245,9 @@ gridSizeEl.addEventListener('input', e => {
   updateThumb(state.gridSize);
   generate();
 });
+// Grabbing cursor while dragging the slider
+gridSizeEl.addEventListener('mousedown', () => document.body.classList.add('slider-dragging'));
+window.addEventListener('mouseup', () => document.body.classList.remove('slider-dragging'));
 
 // ---------- Tile shape icons (fixed, evenly spaced, no scroll) ----------
 // SVGs at 22×22 — color controlled by currentColor; .opt-icon.active sets color:#000
@@ -1365,18 +1373,33 @@ function generateVariation() {
 // generate() renders the full overdraw display canvas. Behavior is wired in a
 // later commit alongside the canvas-sizing rewrite.
 const previewToggleBtn = document.getElementById('preview-repeat');
-const previewLabel     = document.getElementById('preview-label');
+const previewGridBtn   = document.getElementById('preview-grid');
+
 function applyPreviewToggleUI() {
   if (!previewToggleBtn) return;
   const on = !!state.previewRepeat;
   previewToggleBtn.classList.toggle('active', on);
   previewToggleBtn.textContent = on ? 'on' : 'off';
   previewToggleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  if (previewLabel) previewLabel.classList.toggle('active', on);
+  // Grid toggle: visible only while tile preview is on
+  if (previewGridBtn) {
+    previewGridBtn.hidden = !on;
+    previewGridBtn.classList.toggle('active', !!state.previewGrid);
+    previewGridBtn.textContent = state.previewGrid ? 'grid on' : 'grid off';
+    previewGridBtn.setAttribute('aria-pressed', state.previewGrid ? 'true' : 'false');
+  }
 }
+
 if (previewToggleBtn) {
   previewToggleBtn.addEventListener('click', () => {
     state.previewRepeat = !state.previewRepeat;
+    applyPreviewToggleUI();
+    generate();
+  });
+}
+if (previewGridBtn) {
+  previewGridBtn.addEventListener('click', () => {
+    state.previewGrid = !state.previewGrid;
     applyPreviewToggleUI();
     generate();
   });
