@@ -292,6 +292,39 @@ html, body {
 .color-swatch:hover .swatch-x { display: flex; }
 .color-swatch .swatch-x:hover { filter: brightness(1.1); }
 
+/* ── Weight badge — shows/cycles color influence level (1× … 4×) ──
+   Positioned at the bottom-center of each swatch pill, always visible
+   when non-default (.modified) or on hover. */
+.swatch-weight {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 20px;
+  height: 14px;
+  border-radius: 100px;
+  background: #000;
+  color: #fff;
+  font-family: 'Host Grotesk', sans-serif;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0 5px;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 4;
+  opacity: 0;
+  transition: opacity 0.12s;
+  white-space: nowrap;
+}
+.color-swatch:hover .swatch-weight,
+.bg-pill:hover .swatch-weight { opacity: 1; }
+.swatch-weight.modified { opacity: 1; }   /* always show when weight is non-default */
+.swatch-weight:hover { background: #FF3131; }
+
 /* Inline "add color" slot — same width as a swatch, dashed grey, "+" inside */
 .color-add {
   flex: 1;
@@ -376,6 +409,7 @@ html, body {
   white-space: nowrap;
 }
 .opt.active {
+  color: #FF3131;
   font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -407,7 +441,7 @@ html, body {
 }
 .opt-icon:hover { color: #555; }
 .opt-icon.active {
-  color: #000;
+  color: #FF3131;
   /* no underline, no layout shift — only color changes */
 }
 .opt-icon svg { display: block; }

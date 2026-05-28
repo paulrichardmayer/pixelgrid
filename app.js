@@ -15,8 +15,10 @@ const SAVES_KEY  = 'pixelgrid.saves.v1';
 const SAVE_SLOTS = 12;
 
 const state = {
-  bg:            DEFAULT_BG,
-  colors:        [...DEFAULT_COLORS],
+  bg:               DEFAULT_BG,
+  bgInfluence:      50,          // weight of the bg color in motif generation (25/50/100/200)
+  colors:           [...DEFAULT_COLORS],
+  colorInfluences:  [50, 50, 50], // per-accent weight, parallel to colors[]
   // gridSize = pixels per logical motif cell. Motif is always 16×16 cells,
   // so motif pixel size = 16 * gridSize. Slider range: 4–24 px/cell
   // → motif size 64–384 px.
@@ -50,6 +52,41 @@ function mulberry32(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// ---------- Color weight levels ----------
+// Four discrete influence steps exposed in the UI (1× … 4×).
+// These feed directly into palette[i].influence, which proportionalSlots()
+// and bgIndex()/accentIndices() use to distribute color across the motif.
+const INFLUENCE_LEVELS = [25, 50, 100, 200];
+const INFLUENCE_LABELS = ['1×', '2×', '3×', '4×'];
+
+// ---------- Contrast safety (WCAG relative luminance) ----------
+function relativeLuminance(hex) {
+  const toLinear = n => { const c = n / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * toLinear(parseInt(hex.slice(1, 3), 16))
+       + 0.7152 * toLinear(parseInt(hex.slice(3, 5), 16))
+       + 0.0722 * toLinear(parseInt(hex.slice(5, 7), 16));
+}
+function contrastRatio(h1, h2) {
+  const l1 = relativeLuminance(h1), l2 = relativeLuminance(h2);
+  return l1 > l2 ? (l1 + 0.05) / (l2 + 0.05) : (l2 + 0.05) / (l1 + 0.05);
+}
+// Nudge colorHex's lightness until it achieves minRatio contrast against bgHex.
+// Uses _hexToHsv / _hsvToHex (defined later in the color-picker section; both
+// are standard function declarations, so they hoist and are available here).
+function ensureMinContrast(bgHex, colorHex, minRatio = 2.5) {
+  if (contrastRatio(bgHex, colorHex) >= minRatio) return colorHex;
+  const bgL = relativeLuminance(bgHex);
+  const { h, s, v: v0 } = _hexToHsv(colorHex);
+  // Walk toward the contrasting extreme: lighter if bg is dark, darker if bg is light.
+  const dir = bgL < 0.5 ? 1 : -1;
+  for (let i = 1; i <= 20; i++) {
+    const v   = Math.max(0, Math.min(1, v0 + dir * (i / 20)));
+    const hex = _hsvToHex(h, s, v);
+    if (contrastRatio(bgHex, hex) >= minRatio) return hex;
+  }
+  return bgL > 0.5 ? '#1a1a1f' : '#f0f0f0';
 }
 
 // ---------- Tile shapes (PRESERVED) ----------
@@ -495,8 +532,8 @@ function generate() {
 
 function _currentPalette() {
   return [
-    { color: state.bg, influence: 50 },
-    ...state.colors.map(c => ({ color: c, influence: 50 })),
+    { color: state.bg, influence: state.bgInfluence },
+    ...state.colors.map((c, i) => ({ color: c, influence: state.colorInfluences[i] ?? 50 })),
   ];
 }
 function _currentMotif() {
@@ -1028,13 +1065,37 @@ toggleBtn.addEventListener('keydown', e => {
 collapseBtn.addEventListener('click', closePanel);
 
 // ---------- Background pill ----------
-bgPill.addEventListener('click', () => {
+bgPill.addEventListener('click', e => {
+  if (e.target.classList.contains('swatch-weight') || e.target.closest?.('.swatch-weight')) return;
   openColorPicker(bgPill, state.bg, hex => {
     state.bg = hex;
     bgPill.style.background = hex;
     generate();
   });
 });
+
+// Weight badge on bg pill — cycles bgInfluence through 4 levels.
+const bgWeightBtn = document.createElement('button');
+bgWeightBtn.className = 'swatch-weight';
+bgWeightBtn.type = 'button';
+bgWeightBtn.title = 'Background weight — click to cycle (1× low … 4× dominant)';
+function syncBgWeightBtn() {
+  const lvl = INFLUENCE_LEVELS.indexOf(state.bgInfluence);
+  bgWeightBtn.textContent = INFLUENCE_LABELS[lvl >= 0 ? lvl : 1];
+  bgWeightBtn.classList.toggle('modified', state.bgInfluence !== 50);
+}
+syncBgWeightBtn();
+bgWeightBtn.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+bgWeightBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  e.preventDefault();
+  const cur  = INFLUENCE_LEVELS.indexOf(state.bgInfluence);
+  const next = ((cur < 0 ? 1 : cur) + 1) % INFLUENCE_LEVELS.length;
+  state.bgInfluence = INFLUENCE_LEVELS[next];
+  syncBgWeightBtn();
+  generate();
+});
+bgPill.appendChild(bgWeightBtn);
 
 // ---------- Pattern color swatches ----------
 // Always renders exactly 3 pill slots.
@@ -1054,9 +1115,10 @@ function renderSwatches() {
     if (isFilled) {
       sw.style.background = col;
 
-      // Filled pill → open custom picker below it
+      // Filled pill → open custom picker (guard clicks on weight badge and ✕)
       sw.addEventListener('click', e => {
-        if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
+        if (e.target.classList.contains('swatch-x')      || e.target.closest?.('.swatch-x'))      return;
+        if (e.target.classList.contains('swatch-weight') || e.target.closest?.('.swatch-weight')) return;
         openColorPicker(sw, state.colors[i], hex => {
           state.colors[i] = hex;
           sw.style.background = hex;
@@ -1076,12 +1138,33 @@ function renderSwatches() {
           e.preventDefault();
           closeColorPicker();
           state.colors.splice(i, 1);
+          state.colorInfluences.splice(i, 1);   // keep parallel array in sync
           renderSwatches();
           generate();
         });
         x.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
         sw.appendChild(x);
       }
+
+      // Weight badge — cycles colorInfluences[i] through 4 discrete levels.
+      const wb = document.createElement('button');
+      wb.className = 'swatch-weight' + (state.colorInfluences[i] !== 50 ? ' modified' : '');
+      wb.type = 'button';
+      wb.title = 'Color weight — click to cycle (1× low … 4× dominant)';
+      const wbLvl = INFLUENCE_LEVELS.indexOf(state.colorInfluences[i] ?? 50);
+      wb.textContent = INFLUENCE_LABELS[wbLvl >= 0 ? wbLvl : 1];
+      wb.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+      wb.addEventListener('click', e => {
+        e.stopPropagation();
+        e.preventDefault();
+        const cur  = INFLUENCE_LEVELS.indexOf(state.colorInfluences[i] ?? 50);
+        const next = ((cur < 0 ? 1 : cur) + 1) % INFLUENCE_LEVELS.length;
+        state.colorInfluences[i] = INFLUENCE_LEVELS[next];
+        wb.textContent = INFLUENCE_LABELS[next];
+        wb.classList.toggle('modified', INFLUENCE_LEVELS[next] !== 50);
+        generate();
+      });
+      sw.appendChild(wb);
 
     } else {
       // Empty slot: "+" opens picker, pushes new color
@@ -1101,6 +1184,7 @@ function renderSwatches() {
         }, hex => {
           // on Done: push the color (if not already there)
           if (state.colors.length < 3 && !state.colors[i]) {
+            state.colorInfluences.push(50);   // default weight for new color
             state.colors.push(hex);
             renderSwatches();
             generate();
@@ -1209,9 +1293,14 @@ function randomHex() {
 // Full randomize — bg, colors (1–3), tile shape, style, grid size, seed
 function randomizeAll() {
   closeColorPicker();
-  state.bg        = randomHex();
-  const n         = 1 + Math.floor(Math.random() * 3);
-  state.colors    = Array.from({ length: n }, randomHex);
+  state.bg             = randomHex();
+  state.bgInfluence    = 50;   // reset weights to equal on full randomize
+  const n              = 1 + Math.floor(Math.random() * 3);
+  state.colors         = Array.from({ length: n }, randomHex);
+  state.colorInfluences = new Array(n).fill(50);
+  // Contrast safety: nudge each accent's lightness until it's visibly distinct
+  // from the background (ratio ≥ 2.5:1). Prevents invisible near-monochromatic palettes.
+  state.colors = state.colors.map(c => ensureMinContrast(state.bg, c));
   state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
   state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
   // Randomize scale within the 4–24 px/cell range — but NOT while tile preview
@@ -1221,6 +1310,7 @@ function randomizeAll() {
   }
   state.seed      = randomSeed();
   // Sync UI to new state
+  syncBgWeightBtn();
   bgPill.style.background = state.bg;
   gridSizeEl.value        = String(state.gridSize);
   gridLabel.textContent   = `${state.gridSize} px/cell`;
@@ -1356,13 +1446,15 @@ window.addEventListener('resize', () => {
 // ---------- Config (PRESERVED) ----------
 function getConfig() {
   return {
-    version:   2,
-    seed:      state.seed,
-    gridSize:  state.gridSize,
-    style:     state.style,
-    tileShape: state.tileShape,
-    bg:        state.bg,
-    colors:    state.colors.slice(),
+    version:          2,
+    seed:             state.seed,
+    gridSize:         state.gridSize,
+    style:            state.style,
+    tileShape:        state.tileShape,
+    bg:               state.bg,
+    bgInfluence:      state.bgInfluence,
+    colors:           state.colors.slice(),
+    colorInfluences:  state.colorInfluences.slice(),
   };
 }
 
@@ -1396,8 +1488,16 @@ function loadConfig(cfg) {
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
   state.bg        = bg;
   state.colors    = colors;
+  // Restore influences — fall back to 50 for old saves that don't have them.
+  const validInf  = v => Number.isFinite(v) && v > 0;
+  state.bgInfluence    = validInf(cfg.bgInfluence) ? cfg.bgInfluence : 50;
+  state.colorInfluences = colors.map((_, i) =>
+    Array.isArray(cfg.colorInfluences) && validInf(cfg.colorInfluences[i])
+      ? cfg.colorInfluences[i] : 50
+  );
 
   bgPill.style.background = state.bg;
+  syncBgWeightBtn();
   gridSizeEl.value        = String(state.gridSize);
   gridLabel.textContent   = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
