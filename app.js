@@ -1214,8 +1214,11 @@ function randomizeAll() {
   state.colors    = Array.from({ length: n }, randomHex);
   state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
   state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
-  // randomize scale within the new 4–24 px/cell range
-  state.gridSize  = SCALE_MIN + Math.floor(Math.random() * (SCALE_MAX - SCALE_MIN + 1));
+  // Randomize scale within the 4–24 px/cell range — but NOT while tile preview
+  // is on, so the user can compare seams across randomizations at a stable zoom.
+  if (!state.previewRepeat) {
+    state.gridSize = SCALE_MIN + Math.floor(Math.random() * (SCALE_MAX - SCALE_MIN + 1));
+  }
   state.seed      = randomSeed();
   // Sync UI to new state
   bgPill.style.background = state.bg;
