@@ -199,6 +199,21 @@ html, body {
   color: #000;
 }
 
+/* ── Tile preview label: icon + text side by side ── */
+#preview-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.tile-preview-icon {
+  flex-shrink: 0;
+  opacity: 0.18;
+  transition: opacity 0.18s;
+}
+#preview-label.active .tile-preview-icon {
+  opacity: 1;
+}
+
 /* ── Pattern color swatches ──
    Each pill has its own ✕ on hover (only when >1). An inline + slot
    appears at the end of the row when colors < 3. */
@@ -276,11 +291,18 @@ html, body {
 .color-swatch:hover .swatch-x { display: flex; }
 .color-swatch .swatch-x:hover { filter: brightness(1.1); }
 
-/* ── Drag-to-reorder swatches ── */
-.color-swatch[draggable="true"] { cursor: grab; }
-.color-swatch.dragging { opacity: 0.35; }
-.color-swatch.drag-over-left  { box-shadow: -3px 0 0 0 #FF3131; }
-.color-swatch.drag-over-right { box-shadow:  3px 0 0 0 #FF3131; }
+/* ── Mouse-drag reorder: ghost (floating copy) + placeholder (drop target) ── */
+.swatch-ghost {
+  border: 5px solid #000;
+  border-radius: 100px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.28);
+}
+.swatch-placeholder {
+  background: transparent !important;
+  border-style: dashed !important;
+  border-color: #FF3131 !important;
+  pointer-events: none;
+}
 
 /* Inline "add color" slot — same width as a swatch, dashed grey, "+" inside */
 .color-add {

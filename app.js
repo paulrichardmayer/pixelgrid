@@ -1060,73 +1060,35 @@ collapseBtn.addEventListener('click', closePanel);
 // ---------- Pattern color swatches ----------
 // Renders up to 4 pill slots. Position encodes weight: slot 0 = ground (4×),
 // slot 1 = 2×, slot 2 = 1×, slot 3 = 0.5×.
-// Drag filled swatches to reorder (HTML5 drag-and-drop). Slot 0 gets a tooltip
-// explaining it fills the background. Empty slots show a "+" to add colors.
+// Mouse-drag reorders live: the dragged pill lifts as a ghost, a red-dashed
+// placeholder tracks the drop target in real time, other pills slide to make room.
+// Empty slots show a "+" to add a new color.
 
-let _dragSrcIdx = null;
+let _swatchDrag = null;  // tracks an in-progress drag operation
 
 function renderSwatches() {
   colorSwatchesEl.innerHTML = '';
 
   for (let i = 0; i < 4; i++) {
     const isFilled = i < state.colors.length;
-    const col = isFilled ? state.colors[i] : null;
 
     const sw = document.createElement('div');
     sw.className = 'color-swatch' + (isFilled ? '' : ' empty');
 
     if (isFilled) {
-      sw.style.background = col;
-      sw.draggable = true;
-      if (i === 0) {
-        sw.title = 'Ground color — drag to reorder. First position fills the pattern background and has the most influence.';
-      }
+      sw.style.background = state.colors[i];
+      if (i === 0) sw.title = 'ground';
 
-      // Drag-to-reorder: source events
-      sw.addEventListener('dragstart', e => {
-        _dragSrcIdx = i;
-        e.dataTransfer.effectAllowed = 'move';
-        // Timeout so the dragging class doesn't suppress the drag image
-        requestAnimationFrame(() => sw.classList.add('dragging'));
-      });
-      sw.addEventListener('dragend', () => {
-        sw.classList.remove('dragging');
-        colorSwatchesEl.querySelectorAll('.color-swatch').forEach(el => {
-          el.classList.remove('drag-over-left', 'drag-over-right');
-        });
-        _dragSrcIdx = null;
-      });
-
-      // Drag-to-reorder: target events
-      sw.addEventListener('dragover', e => {
-        if (_dragSrcIdx === null || _dragSrcIdx === i) return;
+      // Mousedown initiates drag; if mouse never moves it resolves as a click.
+      sw.addEventListener('mousedown', e => {
+        if (e.button !== 0) return;
+        if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
+        if (state.colors.length < 2) return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        const rect = sw.getBoundingClientRect();
-        const before = e.clientX < rect.left + rect.width / 2;
-        sw.classList.toggle('drag-over-left',  before);
-        sw.classList.toggle('drag-over-right', !before);
-      });
-      sw.addEventListener('dragleave', () => {
-        sw.classList.remove('drag-over-left', 'drag-over-right');
-      });
-      sw.addEventListener('drop', e => {
-        e.preventDefault();
-        if (_dragSrcIdx === null || _dragSrcIdx === i) return;
-        sw.classList.remove('drag-over-left', 'drag-over-right');
-        const rect = sw.getBoundingClientRect();
-        const insertBefore = e.clientX < rect.left + rect.width / 2;
-        const moved = state.colors.splice(_dragSrcIdx, 1)[0];
-        // After removal, adjust target index if source was before it (array shifted left)
-        let targetIdx = _dragSrcIdx < i ? i - 1 : i;
-        if (!insertBefore) targetIdx++;
-        targetIdx = Math.max(0, Math.min(state.colors.length, targetIdx));
-        state.colors.splice(targetIdx, 0, moved);
-        renderSwatches();
-        generate();
+        _beginSwatchDrag(e, i, sw);
       });
 
-      // Click to edit color (guard clicks on ✕)
+      // Click opens the color picker — only fires when no drag occurred.
       sw.addEventListener('click', e => {
         if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         openColorPicker(sw, state.colors[i], hex => {
@@ -1141,7 +1103,7 @@ function renderSwatches() {
         const x = document.createElement('button');
         x.className = 'swatch-x';
         x.type = 'button';
-        x.title = 'Remove color';
+        x.title = 'Remove';
         x.textContent = '✕';
         x.addEventListener('click', e => {
           e.stopPropagation();
@@ -1165,13 +1127,8 @@ function renderSwatches() {
       sw.addEventListener('click', () => {
         const seed = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
         openColorPicker(sw, seed, hex => {
-          // live preview only if slot is now filled (color already pushed)
-          if (state.colors[i]) {
-            state.colors[i] = hex;
-            generate();
-          }
+          if (state.colors[i]) { state.colors[i] = hex; generate(); }
         }, hex => {
-          // on Done: push the color (if not already there)
           if (state.colors.length < 4 && !state.colors[i]) {
             state.colors.push(hex);
             renderSwatches();
@@ -1183,6 +1140,97 @@ function renderSwatches() {
 
     colorSwatchesEl.appendChild(sw);
   }
+}
+
+/**
+ * Begin a live mouse-drag reorder on a swatch pill.
+ * - Replaces the source swatch with a dashed placeholder that moves with the cursor.
+ * - Creates a ghost (floating copy) that follows the mouse exactly.
+ * - On mouseup: commits the new order if the pill moved, or restores the original
+ *   element so the pending click event can still fire the color picker.
+ */
+function _beginSwatchDrag(e, srcIdx, swEl) {
+  const rect = swEl.getBoundingClientRect();
+  const offX = e.clientX - rect.left;
+  const offY = e.clientY - rect.top;
+
+  // Ghost: floating visual copy that follows the cursor
+  const ghost = document.createElement('div');
+  ghost.className = 'color-swatch swatch-ghost';
+  Object.assign(ghost.style, {
+    background:    state.colors[srcIdx],
+    position:      'fixed',
+    width:         rect.width + 'px',
+    height:        rect.height + 'px',
+    left:          rect.left + 'px',
+    top:           rect.top + 'px',
+    pointerEvents: 'none',
+    zIndex:        '1000',
+  });
+  document.body.appendChild(ghost);
+
+  // Placeholder: invisible element that occupies space in the flex row,
+  // styled with a red dashed border to mark the drop target.
+  const placeholder = document.createElement('div');
+  placeholder.className = 'color-swatch swatch-placeholder';
+  swEl.replaceWith(placeholder);
+
+  _swatchDrag = { srcIdx, moved: false };
+
+  function onMove(ev) {
+    ghost.style.left = (ev.clientX - offX) + 'px';
+    ghost.style.top  = (ev.clientY - offY) + 'px';
+    _swatchDrag.moved = true;
+
+    // Reposition placeholder: walk children left→right, insert before the first
+    // whose visual center is to the right of the ghost's center.
+    const ghostCx = ev.clientX - offX + rect.width / 2;
+    let inserted = false;
+    for (const child of colorSwatchesEl.children) {
+      if (child === placeholder) continue;                    // skip self
+      const r = child.getBoundingClientRect();
+      if (ghostCx < r.left + r.width / 2) {
+        colorSwatchesEl.insertBefore(placeholder, child);
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) colorSwatchesEl.appendChild(placeholder); // dropped at end
+  }
+
+  function onUp() {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup',   onUp);
+    ghost.remove();
+
+    // Count filled swatches before placeholder → that's the final insert index.
+    const children = [...colorSwatchesEl.children];
+    const phIdx    = children.indexOf(placeholder);
+    let destIdx = 0;
+    for (let j = 0; j < phIdx; j++) {
+      if (!children[j].classList.contains('swatch-placeholder') &&
+          !children[j].classList.contains('empty')) destIdx++;
+    }
+
+    const didMove = _swatchDrag.moved && destIdx !== srcIdx;
+    _swatchDrag = null;
+
+    if (didMove) {
+      // Commit reorder: remove from srcIdx, insert at destIdx
+      // (destIdx was counted EXCLUDING the placeholder, so it's already correct
+      //  relative to the post-splice array — no adjustment needed)
+      const moved = state.colors.splice(srcIdx, 1)[0];
+      state.colors.splice(destIdx, 0, moved);
+      renderSwatches();
+      generate();
+    } else {
+      // No drag movement — restore original swatch so the queued click can fire
+      placeholder.replaceWith(swEl);
+    }
+  }
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup',   onUp);
 }
 
 // ---------- Grid size slider (live preview) ----------
@@ -1317,11 +1365,14 @@ function generateVariation() {
 // generate() renders the full overdraw display canvas. Behavior is wired in a
 // later commit alongside the canvas-sizing rewrite.
 const previewToggleBtn = document.getElementById('preview-repeat');
+const previewLabel     = document.getElementById('preview-label');
 function applyPreviewToggleUI() {
   if (!previewToggleBtn) return;
-  previewToggleBtn.classList.toggle('active', !!state.previewRepeat);
-  previewToggleBtn.textContent = state.previewRepeat ? 'on' : 'off';
-  previewToggleBtn.setAttribute('aria-pressed', state.previewRepeat ? 'true' : 'false');
+  const on = !!state.previewRepeat;
+  previewToggleBtn.classList.toggle('active', on);
+  previewToggleBtn.textContent = on ? 'on' : 'off';
+  previewToggleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  if (previewLabel) previewLabel.classList.toggle('active', on);
 }
 if (previewToggleBtn) {
   previewToggleBtn.addEventListener('click', () => {
