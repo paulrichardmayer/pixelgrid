@@ -1,4 +1,4 @@
-# Chromatic Pattern Engine
+# PixelGrid Maker
 
 Make beautiful, seamless patterns. Instantly.
 

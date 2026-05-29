@@ -1,4 +1,4 @@
-// Chromatic Pattern Engine
+// PixelGrid Maker
 // Vanilla JS + Canvas. No build step.
 //
 // Generation, slider morphing, export, save/restore, and canvas rendering
