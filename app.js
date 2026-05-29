@@ -7,7 +7,7 @@
 // ---------- State ----------
 const DEFAULT_COLORS = ['#dfff00', '#ff3d7a', '#5ad7ff', '#1a1a1f'];
 
-const STYLE_NAMES = ['noise','checker','diagonal','mosaic','scattered','wave','brick','plaid','halftone','concentric','zigzag'];
+const STYLE_NAMES = ['checker','noise','diagonal','wave','brick','plaid','zigzag','concentric','mosaic','halftone','scattered'];
 const SHAPE_NAMES = ['square','circle','triangle','diamond','hexagon'];
 
 const SAVES_KEY  = 'pixelgrid.saves.v1';
@@ -1067,7 +1067,8 @@ collapseBtn.addEventListener('click', closePanel);
 // placeholder tracks the drop target in real time, other pills slide to make room.
 // Empty slots show a "+" to add a new color.
 
-let _swatchDrag = null;  // tracks an in-progress drag operation
+let _swatchDrag = null;            // tracks an in-progress drag operation
+let _suppressNextSwatchClick = false;  // prevents spurious click after same-position drag
 
 function renderSwatches() {
   colorSwatchesEl.innerHTML = '';
@@ -1080,19 +1081,19 @@ function renderSwatches() {
 
     if (isFilled) {
       sw.style.background = state.colors[i];
-      if (i === 0) sw.title = 'ground';
+      if (i === 0) sw.dataset.tooltip = 'grab me';
 
-      // Mousedown initiates drag; if mouse never moves it resolves as a click.
+      // Mousedown starts watching for a drag; click fires naturally for quick taps.
       sw.addEventListener('mousedown', e => {
         if (e.button !== 0) return;
         if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         if (state.colors.length < 2) return;
-        e.preventDefault();
         _beginSwatchDrag(e, i, sw);
       });
 
-      // Click opens the color picker — only fires when no drag occurred.
+      // Click opens the color picker — suppressed only after a same-position drag.
       sw.addEventListener('click', e => {
+        if (_suppressNextSwatchClick) { _suppressNextSwatchClick = false; return; }
         if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         openColorPicker(sw, state.colors[i], hex => {
           state.colors[i] = hex;
@@ -1116,7 +1117,7 @@ function renderSwatches() {
           renderSwatches();
           generate();
         });
-        x.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+        x.addEventListener('mousedown', e => { e.stopPropagation(); }); // prevent drag-watch from triggering on ✕
         sw.appendChild(x);
       }
 
@@ -1147,51 +1148,68 @@ function renderSwatches() {
 
 /**
  * Begin a live mouse-drag reorder on a swatch pill.
- * - Replaces the source swatch with a dashed placeholder that moves with the cursor.
- * - Creates a ghost (floating copy) that follows the mouse exactly.
- * - On mouseup: commits the new order if the pill moved, or restores the original
- *   element so the pending click event can still fire the color picker.
+ *
+ * Phase 'watching': mouse is held but hasn't moved ≥4 px — no visual changes,
+ *   so a quick click still fires naturally (no preventDefault needed).
+ * Phase 'dragging': threshold crossed — ghost appears, placeholder tracks the
+ *   drop slot live in the flex row.
+ * On mouseup: commits reorder if pill moved, or restores it (same slot drops
+ *   suppress the next click event via _suppressNextSwatchClick).
+ * Escape key: calls _swatchDrag.cancel() to abort cleanly.
  */
 function _beginSwatchDrag(e, srcIdx, swEl) {
-  const rect = swEl.getBoundingClientRect();
-  const offX = e.clientX - rect.left;
-  const offY = e.clientY - rect.top;
+  const THRESH = 4;
+  const startX = e.clientX, startY = e.clientY;
+  let phase = 'watching';   // 'watching' → 'dragging'
+  let ghost = null, placeholder = null;
+  let offX = 0, offY = 0, swRect = null;
 
-  // Ghost: floating visual copy that follows the cursor
-  const ghost = document.createElement('div');
-  ghost.className = 'color-swatch swatch-ghost';
-  Object.assign(ghost.style, {
-    background:    state.colors[srcIdx],
-    position:      'fixed',
-    width:         rect.width + 'px',
-    height:        rect.height + 'px',
-    left:          rect.left + 'px',
-    top:           rect.top + 'px',
-    pointerEvents: 'none',
-    zIndex:        '1000',
-  });
-  document.body.appendChild(ghost);
-  document.body.classList.add('swatch-dragging');
+  function beginActualDrag() {
+    phase  = 'dragging';
+    swRect = swEl.getBoundingClientRect();
+    offX   = startX - swRect.left;
+    offY   = startY - swRect.top;
 
-  // Placeholder: invisible element that occupies space in the flex row,
-  // styled with a red dashed border to mark the drop target.
-  const placeholder = document.createElement('div');
-  placeholder.className = 'color-swatch swatch-placeholder';
-  swEl.replaceWith(placeholder);
+    // Transition cursor from grab → grabbing
+    document.body.classList.remove('swatch-watching');
 
-  _swatchDrag = { srcIdx, moved: false };
+    // Ghost: floating visual copy that follows the cursor
+    ghost = document.createElement('div');
+    ghost.className = 'color-swatch swatch-ghost';
+    Object.assign(ghost.style, {
+      background:    state.colors[srcIdx],
+      position:      'fixed',
+      width:         swRect.width  + 'px',
+      height:        swRect.height + 'px',
+      left:          swRect.left   + 'px',
+      top:           swRect.top    + 'px',
+      pointerEvents: 'none',
+      zIndex:        '1000',
+    });
+    document.body.appendChild(ghost);
+    document.body.classList.add('swatch-dragging');
+
+    // Placeholder: red-dashed slot that marks the drop target in the flex row
+    placeholder = document.createElement('div');
+    placeholder.className = 'color-swatch swatch-placeholder';
+    swEl.replaceWith(placeholder);
+  }
 
   function onMove(ev) {
+    if (phase === 'watching') {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) >= THRESH) beginActualDrag();
+      else return;
+    }
+    // phase === 'dragging'
     ghost.style.left = (ev.clientX - offX) + 'px';
     ghost.style.top  = (ev.clientY - offY) + 'px';
-    _swatchDrag.moved = true;
 
-    // Reposition placeholder: walk children left→right, insert before the first
-    // whose visual center is to the right of the ghost's center.
-    const ghostCx = ev.clientX - offX + rect.width / 2;
+    // Reposition placeholder: insert before the first child whose visual centre
+    // is to the right of the ghost's centre.
+    const ghostCx = ev.clientX - offX + swRect.width / 2;
     let inserted = false;
     for (const child of colorSwatchesEl.children) {
-      if (child === placeholder) continue;                    // skip self
+      if (child === placeholder) continue;
       const r = child.getBoundingClientRect();
       if (ghostCx < r.left + r.width / 2) {
         colorSwatchesEl.insertBefore(placeholder, child);
@@ -1199,16 +1217,25 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
         break;
       }
     }
-    if (!inserted) colorSwatchesEl.appendChild(placeholder); // dropped at end
+    if (!inserted) colorSwatchesEl.appendChild(placeholder);
   }
 
   function onUp() {
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup',   onUp);
+
+    if (phase === 'watching') {
+      // Threshold never crossed — let the browser's click event fire normally.
+      document.body.classList.remove('swatch-watching');
+      _swatchDrag = null;
+      return;
+    }
+
+    // Tear down drag chrome
     ghost.remove();
     document.body.classList.remove('swatch-dragging');
 
-    // Count filled swatches before placeholder → that's the final insert index.
+    // Determine destination index from placeholder position in the flex row.
     const children = [...colorSwatchesEl.children];
     const phIdx    = children.indexOf(placeholder);
     let destIdx = 0;
@@ -1217,22 +1244,38 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
           !children[j].classList.contains('empty')) destIdx++;
     }
 
-    const didMove = _swatchDrag.moved && destIdx !== srcIdx;
+    const didMove = destIdx !== srcIdx;
     _swatchDrag = null;
 
     if (didMove) {
-      // Commit reorder: remove from srcIdx, insert at destIdx
-      // (destIdx was counted EXCLUDING the placeholder, so it's already correct
-      //  relative to the post-splice array — no adjustment needed)
       const moved = state.colors.splice(srcIdx, 1)[0];
       state.colors.splice(destIdx, 0, moved);
       renderSwatches();
       generate();
     } else {
-      // No drag movement — restore original swatch so the queued click can fire
+      // Same-slot drop — restore swatch and kill the stray click that mouseup fires.
+      _suppressNextSwatchClick = true;
+      requestAnimationFrame(() => { _suppressNextSwatchClick = false; });
       placeholder.replaceWith(swEl);
     }
   }
+
+  // Expose cancel() so the Escape key can abort a drag cleanly.
+  _swatchDrag = {
+    srcIdx,
+    cancel() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup',   onUp);
+      if (ghost) { ghost.remove(); ghost = null; }
+      document.body.classList.remove('swatch-watching');
+      document.body.classList.remove('swatch-dragging');
+      if (placeholder?.parentNode) placeholder.replaceWith(swEl);
+      _swatchDrag = null;
+    },
+  };
+
+  // Show grab cursor as soon as the user holds the mouse button down.
+  document.body.classList.add('swatch-watching');
 
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup',   onUp);
@@ -1374,6 +1417,7 @@ function generateVariation() {
 // later commit alongside the canvas-sizing rewrite.
 const previewToggleBtn = document.getElementById('preview-repeat');
 const previewGridBtn   = document.getElementById('preview-grid');
+const gridCtrlLabel    = document.getElementById('grid-ctrl-label');
 
 function applyPreviewToggleUI() {
   if (!previewToggleBtn) return;
@@ -1381,11 +1425,12 @@ function applyPreviewToggleUI() {
   previewToggleBtn.classList.toggle('active', on);
   previewToggleBtn.textContent = on ? 'on' : 'off';
   previewToggleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  // Grid toggle: visible only while tile preview is on
+  // Grid label + toggle: slide in to the right of tile preview when it's on
+  if (gridCtrlLabel) gridCtrlLabel.hidden = !on;
   if (previewGridBtn) {
     previewGridBtn.hidden = !on;
     previewGridBtn.classList.toggle('active', !!state.previewGrid);
-    previewGridBtn.textContent = state.previewGrid ? 'grid on' : 'grid off';
+    previewGridBtn.textContent = state.previewGrid ? 'on' : 'off';
     previewGridBtn.setAttribute('aria-pressed', state.previewGrid ? 'true' : 'false');
   }
 }
@@ -1477,6 +1522,7 @@ function exportAsSVG() {
 // ---------- Keyboard shortcuts ----------
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    if (_swatchDrag?.cancel) { _swatchDrag.cancel(); return; }
     if (_pickerEl) { closeColorPicker(); return; }
     closePanel();
     return;
@@ -1486,6 +1532,9 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space') {
     e.preventDefault();
     randomizeAll();
+  } else if (e.key === 'c' || e.key === 'C') {
+    e.preventDefault();
+    if (panelOpen) closePanel(); else openPanel();
   } else if (e.key === 'g' || e.key === 'G') {
     e.preventDefault();
     generateVariation();
