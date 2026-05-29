@@ -5,22 +5,30 @@
 // are PRESERVED from the previous version. Only the UI shell changed.
 
 // ---------- State ----------
-const DEFAULT_BG     = '#dfff00';
-const DEFAULT_COLORS = ['#ff3d7a', '#5ad7ff', '#1a1a1f'];
+const DEFAULT_COLORS = ['#dfff00', '#ff3d7a', '#5ad7ff', '#1a1a1f'];
 
-const STYLE_NAMES = ['noise','checker','diagonal','mosaic','scattered','wave','brick','plaid','halftone','concentric','zigzag'];
+const STYLE_NAMES = ['checker','noise','diagonal','wave','brick','plaid','zigzag','concentric','mosaic','halftone','scattered'];
 const SHAPE_NAMES = ['square','circle','triangle','diamond','hexagon'];
 
 const SAVES_KEY  = 'pixelgrid.saves.v1';
 const SAVE_SLOTS = 12;
 
 const state = {
-  bg:        DEFAULT_BG,
-  colors:    [...DEFAULT_COLORS],
-  gridSize:  24,
-  style:     STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
-  tileShape: 'square',
-  seed:      randomSeed(),
+  // colors[0] = ground color (canvas fill + highest motif influence = 4×).
+  // colors[1..3] = accent colors with decreasing influence: 2×, 1×, 0.5×.
+  // Position = weight — drag swatches to reorder.
+  colors:        [...DEFAULT_COLORS],
+  // gridSize = pixels per logical motif cell. Motif is always 16×16 cells,
+  // so motif pixel size = 16 * gridSize. Slider range: 4–24 px/cell
+  // → motif size 64–384 px.
+  gridSize:      8,
+  style:         STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)],
+  tileShape:     'square',
+  seed:          randomSeed(),
+  // When true, render the motif as a 3×3 tile preview with thin guide lines
+  // marking motif boundaries so seamless tiling can be verified.
+  previewRepeat: false,  // 3×3 tile preview mode
+  previewGrid:   true,   // show red guide lines inside tile preview
 };
 
 let saveSlots = new Array(SAVE_SLOTS).fill(null);
@@ -44,6 +52,39 @@ function mulberry32(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// ---------- Positional color weights ----------
+// Position 0 (ground) = highest influence (4×). Each subsequent position halves.
+// These feed into palette[i].influence for proportionalSlots() and bgIndex().
+const POSITION_WEIGHTS = [200, 100, 50, 25];
+
+// ---------- Contrast safety (WCAG relative luminance) ----------
+function relativeLuminance(hex) {
+  const toLinear = n => { const c = n / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * toLinear(parseInt(hex.slice(1, 3), 16))
+       + 0.7152 * toLinear(parseInt(hex.slice(3, 5), 16))
+       + 0.0722 * toLinear(parseInt(hex.slice(5, 7), 16));
+}
+function contrastRatio(h1, h2) {
+  const l1 = relativeLuminance(h1), l2 = relativeLuminance(h2);
+  return l1 > l2 ? (l1 + 0.05) / (l2 + 0.05) : (l2 + 0.05) / (l1 + 0.05);
+}
+// Nudge colorHex's lightness until it achieves minRatio contrast against bgHex.
+// Uses _hexToHsv / _hsvToHex (defined later in the color-picker section; both
+// are standard function declarations, so they hoist and are available here).
+function ensureMinContrast(bgHex, colorHex, minRatio = 2.5) {
+  if (contrastRatio(bgHex, colorHex) >= minRatio) return colorHex;
+  const bgL = relativeLuminance(bgHex);
+  const { h, s, v: v0 } = _hexToHsv(colorHex);
+  // Walk toward the contrasting extreme: lighter if bg is dark, darker if bg is light.
+  const dir = bgL < 0.5 ? 1 : -1;
+  for (let i = 1; i <= 20; i++) {
+    const v   = Math.max(0, Math.min(1, v0 + dir * (i / 20)));
+    const hex = _hsvToHex(h, s, v);
+    if (contrastRatio(bgHex, hex) >= minRatio) return hex;
+  }
+  return bgL > 0.5 ? '#1a1a1f' : '#f0f0f0';
 }
 
 // ---------- Tile shapes (PRESERVED) ----------
@@ -99,7 +140,6 @@ const toggleBtn    = document.getElementById('toggle-btn');
 const panel        = document.getElementById('panel');
 const panelCard    = panel.querySelector('.panel-card');
 const collapseBtn  = document.getElementById('collapse-btn');
-const bgPill       = document.getElementById('bg-pill');
 const colorSwatchesEl = document.getElementById('color-swatches');
 const gridSizeEl   = document.getElementById('grid-size');
 const gridLabel    = document.getElementById('grid-label');
@@ -111,15 +151,19 @@ const savedPatterns = document.getElementById('saved-patterns');
 const centerRandomize = document.getElementById('center-randomize');
 
 // ---------- Square slider thumb (grows left→right) ----------
-const THUMB_MIN = 16;   // px at value=4  (10 → 16 so it reads as a thumb, not a marker)
-const THUMB_MAX = 30;   // px at value=64
+// Range is now 4–24 px/cell (was 4–64), so the thumb size scales over a
+// 20-unit range. THUMB_MIN/MAX kept as before for visual continuity.
+const THUMB_MIN  = 16;   // px at value=4
+const THUMB_MAX  = 30;   // px at value=24
+const SCALE_MIN  = 4;
+const SCALE_MAX  = 24;
 
 function updateThumb(value) {
   if (!sliderThumb || !sliderTrack) return;
-  const pct  = (Math.max(4, Math.min(64, value)) - 4) / 60;
+  const v   = Math.max(SCALE_MIN, Math.min(SCALE_MAX, value));
+  const pct = (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN);
   const size = Math.round(THUMB_MIN + (THUMB_MAX - THUMB_MIN) * pct);
   const trackW = sliderTrack.clientWidth;
-  // left edge = 0 at pct=0, right edge = trackW at pct=1
   const center = size / 2 + pct * (trackW - size);
   sliderThumb.style.width  = size + 'px';
   sliderThumb.style.height = size + 'px';
@@ -179,6 +223,7 @@ const MOTIFS = {
     const bg  = bgIndex(palette);
     const acc = accentIndices(palette, bg);
     if (acc.length === 0) { for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg; return m; }
+    // Field starts as bg (a real palette color, not the canvas underneath).
     for (let y = 0; y < dim; y++) for (let x = 0; x < dim; x++) m[y][x] = bg;
     const c = (dim - 1) / 2;
     const baseR = dim * 0.30;
@@ -188,9 +233,14 @@ const MOTIFS = {
     const nZones = acc.length;
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const dx = x - c, dy = y - c;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        const angle = Math.atan2(dy, dx);
+        // Toroidal distance from center so the blob tiles seamlessly when
+        // repeated. The lobe direction (angle) stays non-toroidal to keep
+        // the blob visually directional.
+        const dxR = x - c, dyR = y - c;
+        const tdx = Math.min(Math.abs(dxR), dim - Math.abs(dxR));
+        const tdy = Math.min(Math.abs(dyR), dim - Math.abs(dyR));
+        const d   = Math.sqrt(tdx * tdx + tdy * tdy);
+        const angle = Math.atan2(dyR, dxR);
         const r = baseR + Math.sin(angle * lobes + phase) * wobble;
         if (d > r) continue;
         const zone = Math.min(nZones - 1, Math.floor((1 - d / r) * nZones));
@@ -332,7 +382,10 @@ const MOTIFS = {
     const amp   = Math.max(2, Math.round(bandH * (0.45 + rand() * 0.5)));
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / (dim - 1) + phase));
+        // Divide by `dim`, not `dim-1`: with /dim the sine completes exactly
+        // `freq` periods over [0, dim) so the value at x=0 matches the value
+        // at x=dim. That's what makes horizontal tiling seamless.
+        const disp = Math.round(amp * Math.sin(2 * Math.PI * freq * x / dim + phase));
         const yw   = ((y + disp) % dim + dim) % dim;
         m[y][x] = colors[Math.floor(yw * n / dim) % n];
       }
@@ -401,14 +454,19 @@ const MOTIFS = {
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
     const n     = colors.length;
-    // Smart variation: ring width + center offset + ring start phase
+    // Variation: ring width + ring-start phase. Center is FIXED at the motif
+    // midpoint and distance is TOROIDAL Chebyshev — both required so adjacent
+    // tiles interlock with no visible seam.
     const ringW = 1 + Math.floor(rand() * 3);          // 1,2,3
-    const cx    = (dim - 1) / 2 + (rand() - 0.5) * dim * 0.3;
-    const cy    = (dim - 1) / 2 + (rand() - 0.5) * dim * 0.3;
+    const c     = (dim - 1) / 2;
     const phase = Math.floor(rand() * n);
     for (let y = 0; y < dim; y++) {
       for (let x = 0; x < dim; x++) {
-        const dist = Math.max(Math.abs(x - cx), Math.abs(y - cy));
+        const dxR = Math.abs(x - c);
+        const dyR = Math.abs(y - c);
+        const tdx = Math.min(dxR, dim - dxR);
+        const tdy = Math.min(dyR, dim - dyR);
+        const dist = Math.max(tdx, tdy);
         const ring = Math.floor(dist / ringW);
         m[y][x] = colors[(ring + phase) % n];
       }
@@ -421,9 +479,11 @@ const MOTIFS = {
     const acc    = accentIndices(palette, bg);
     const colors = [bg, ...acc];
     const n      = colors.length;
-    // Smart variation: frequency + amplitude + orientation (horiz / vert)
-    const freq     = 1 + Math.floor(rand() * 2);
-    const period   = Math.max(1, Math.floor(dim / freq));
+    // Variation: pick a period that divides dim cleanly (the full triangle
+    // wave period is 2*period — must divide dim for seamless tiling along
+    // the wave axis), plus amplitude and orientation.
+    const periodChoices = [2, 4, 8].filter(p => dim % (2 * p) === 0);
+    const period   = periodChoices[Math.floor(rand() * periodChoices.length)] || 8;
     const bandH    = dim / n;
     const amp      = Math.max(2, Math.round(bandH * (0.4 + rand() * 0.5)));
     const vertical = rand() > 0.5;     // half the time the zigzag runs the other axis
@@ -442,144 +502,296 @@ const MOTIFS = {
   },
 };
 
-// ---------- Generation (PRESERVED) ----------
+// ---------- Generation ----------
+// Two rendering paths:
+//   1) overdraw display canvas — ceil-based motif count so the tiled pattern
+//      always reaches every viewport edge with no clipping artifacts.
+//   2) clean export canvas — floor-based motif count, sized to the largest
+//      whole-motif rectangle that fits inside the viewport. Used by PNG/SVG/copy.
+//   3) preview-repeat — 3×3 motif block centered with red guide lines.
+
 function generate() {
   fitCanvas();
-  const tile  = state.gridSize;
-  const shape = state.tileShape;
-  const palette = [
-    { color: state.bg, influence: 50 },
-    ...state.colors.map(c => ({ color: c, influence: 50 })),
-  ];
+  if (state.previewRepeat) {
+    renderPreviewRepeat();
+    return;
+  }
+  // Render into the full padded canvas (W + 2×margin) so overdraw tiles that
+  // straddle the viewport edge are drawn completely — no arc/corner clipping.
+  const margin = state.gridSize;
+  renderToContext(ctx, {
+    W:   window.innerWidth  + margin * 2,
+    H:   window.innerHeight + margin * 2,
+    dpr: window.devicePixelRatio || 1,
+    overdraw: true,
+  });
+}
+
+function _currentPalette() {
+  return state.colors.map((c, i) => ({ color: c, influence: POSITION_WEIGHTS[i] ?? 25 }));
+}
+function _currentMotif() {
+  const palette = _currentPalette();
   const rand    = mulberry32(state.seed);
   const motifFn = MOTIFS[state.style] ?? MOTIFS.noise;
-  const motif   = motifFn(MOTIF_DIM, palette, rand);
+  return { palette, motif: motifFn(MOTIF_DIM, palette, rand) };
+}
 
-  // Work in CSS-pixel space (fitCanvas already scaled ctx by dpr)
-  const W   = window.innerWidth;
-  const H   = window.innerHeight;
-  const dpr = window.devicePixelRatio || 1;
-  // Snap a CSS-pixel coordinate to land on an integer PHYSICAL pixel after the
-  // dpr scale of the canvas context. Without this, fractional DPR (1.25/1.5/1.75
-  // on Windows scaling) turns integer CSS coords into fractional physical coords,
-  // which anti-alias the rect edges and leave visible 1-px grid seams.
-  const snap = (v) => Math.round(v * dpr) / dpr;
-
-  let cols, rows, drawTile;
+/**
+ * Render the tiled pattern into a context.
+ * @param {CanvasRenderingContext2D} c2
+ * @param {{ W:number, H:number, dpr:number, overdraw:boolean }} opts
+ *   overdraw=true  → ceil-based motif count (display). Edges naturally clip.
+ *   overdraw=false → floor-based motif count (export). Output = clean tile.
+ */
+function renderToContext(c2, opts) {
+  const { W, H, dpr, overdraw } = opts;
+  const { palette, motif } = _currentMotif();
+  const cellPx  = state.gridSize;
+  const shape   = state.tileShape;
+  // Background fill — covers shape gaps (e.g. corners between adjacent circles)
+  // with the ground color so the motif still reads as a unified field.
+  c2.fillStyle = state.colors[0] ?? '#000000';
+  c2.fillRect(0, 0, W, H);
 
   if (shape === 'hexagon') {
-    const r0    = tile / 2;
-    const hexW0 = Math.sqrt(3) * r0;
-    cols = Math.max(1, Math.round(W / hexW0));
-    const eHexW = W / cols;
-    const er    = eHexW / Math.sqrt(3);
-    rows = Math.max(1, Math.ceil(H / (1.5 * er)) + 1);
-    drawTile = (c2, col, row, color) => {
-      const cx = col * eHexW + (row % 2 === 1 ? eHexW / 2 : 0) + eHexW / 2;
-      const cy = row * er * 1.5 + er;
-      c2.fillStyle   = color;
-      c2.strokeStyle = color;       // seal sub-pixel seams between hex tiles
-      c2.lineWidth   = 1;
-      TILE_SHAPES.hexagon(c2, cx, cy, er);
-      c2.stroke();
-    };
-  } else {
-    // Use Math.floor so tiles keep their exact gridSize — leftover space is
-    // split equally on both sides, giving symmetric gaps on all 4 edges.
-    cols = Math.max(1, Math.floor(W / tile));
-    rows = Math.max(1, Math.floor(H / tile));
-    const tW  = tile;
-    const tH  = tile;
-    const offX = (W - cols * tW) / 2;   // equal gap left & right
-    const offY = (H - rows * tH) / 2;   // equal gap top & bottom
-
-    if (shape === 'square') {
-      // Snap edges to physical-pixel boundaries so adjacent squares share an
-      // EXACT integer physical pixel — no seams even on fractional DPR.
-      drawTile = (c2, col, row, color) => {
-        const x0 = snap(offX + col * tW);
-        const y0 = snap(offY + row * tH);
-        const x1 = snap(offX + (col + 1) * tW);
-        const y1 = snap(offY + (row + 1) * tH);
-        c2.fillStyle = color;
-        c2.fillRect(x0, y0, x1 - x0, y1 - y0);
-      };
-    } else if (shape === 'triangle') {
-      // Snap every triangle vertex to a physical-pixel boundary so each
-      // triangle's diagonal anti-aliases identically across the field.
-      drawTile = (c2, col, row, color) => {
-        const x0 = snap(offX + col * tW);
-        const x1 = snap(offX + (col + 1) * tW);
-        const xm = snap(offX + col * tW + tW / 2);   // apex x
-        const y0 = snap(offY + row * tH);
-        const y1 = snap(offY + (row + 1) * tH);
-        c2.fillStyle   = color;
-        c2.strokeStyle = color;
-        c2.lineWidth   = 1;
-        c2.beginPath();
-        if ((col + row) % 2 === 0) {
-          c2.moveTo(xm, y0);          // top apex
-          c2.lineTo(x1, y1);          // bottom-right
-          c2.lineTo(x0, y1);          // bottom-left
-        } else {
-          c2.moveTo(x0, y0);          // top-left
-          c2.lineTo(x1, y0);          // top-right
-          c2.lineTo(xm, y1);          // bottom apex
-        }
-        c2.closePath();
-        c2.fill();
-        c2.stroke();
-      };
-    } else if (shape === 'circle') {
-      // Center each circle in its cell — fixes the "cut side" when cells are
-      // not square (tW ≠ tH). Since tiles are now always square (tW = tH = tile),
-      // r = tW/2 and the center is the true cell midpoint.
-      drawTile = (c2, col, row, color) => {
-        const r  = tW / 2;
-        const cx = offX + col * tW + tW / 2;
-        const cy = offY + row * tH + tH / 2;
-        c2.fillStyle   = color;
-        c2.strokeStyle = color;
-        c2.lineWidth   = 1;
-        c2.beginPath();
-        c2.arc(cx, cy, r, 0, Math.PI * 2);
-        c2.fill();
-        c2.stroke();
-      };
-    } else {
-      // Diamond and any future shapes — same-color stroke seals sub-pixel gaps
-      const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
-      drawTile = (c2, col, row, color) => {
-        c2.fillStyle   = color;
-        c2.strokeStyle = color;
-        c2.lineWidth   = 1;
-        shapeFn(c2, offX + col * tW, offY + row * tH, tW, col, row);
-        c2.stroke();
-      };
-    }
+    _renderHexagons(c2, motif, palette, cellPx, W, H, dpr, overdraw);
+    return;
   }
 
-  ctx.fillStyle = state.bg;
-  ctx.fillRect(0, 0, W, H);
+  // Square-based shapes: tile count is in MOTIFS (16 cells each), then expand
+  // back to cell count for the inner draw loop.
+  const motifPx = MOTIF_DIM * cellPx;
+  const motifsX = overdraw
+    ? Math.max(1, Math.ceil(W / motifPx))
+    : Math.max(1, Math.floor(W / motifPx));
+  const motifsY = overdraw
+    ? Math.max(1, Math.ceil(H / motifPx))
+    : Math.max(1, Math.floor(H / motifPx));
+  const cellsX = motifsX * MOTIF_DIM;
+  const cellsY = motifsY * MOTIF_DIM;
+  _renderSquareCells(c2, motif, palette, cellPx, cellsX, cellsY, dpr, 0, 0);
+}
 
-  for (let row = 0; row < rows; row++) {
-    const my = row % MOTIF_DIM;
-    for (let col = 0; col < cols; col++) {
-      const mx  = col % MOTIF_DIM;
+function _renderSquareCells(c2, motif, palette, cellPx, cellsX, cellsY, dpr, originX, originY) {
+  // Snap a CSS-pixel coordinate to land on an integer PHYSICAL pixel after the
+  // dpr scale of the context. Eliminates 1-px seams on fractional-DPR displays.
+  const snap  = (v) => Math.round(v * dpr) / dpr;
+  const shape = state.tileShape;
+  let drawTile;
+
+  if (shape === 'square') {
+    drawTile = (col, row, color) => {
+      const x0 = snap(originX + col * cellPx);
+      const y0 = snap(originY + row * cellPx);
+      const x1 = snap(originX + (col + 1) * cellPx);
+      const y1 = snap(originY + (row + 1) * cellPx);
+      c2.fillStyle = color;
+      c2.fillRect(x0, y0, x1 - x0, y1 - y0);
+    };
+  } else if (shape === 'triangle') {
+    drawTile = (col, row, color) => {
+      const x0 = snap(originX + col * cellPx);
+      const x1 = snap(originX + (col + 1) * cellPx);
+      const xm = snap(originX + col * cellPx + cellPx / 2);
+      const y0 = snap(originY + row * cellPx);
+      const y1 = snap(originY + (row + 1) * cellPx);
+      c2.fillStyle   = color;
+      c2.strokeStyle = color;
+      c2.lineWidth   = 1;
+      c2.beginPath();
+      if ((col + row) % 2 === 0) {
+        c2.moveTo(xm, y0);
+        c2.lineTo(x1, y1);
+        c2.lineTo(x0, y1);
+      } else {
+        c2.moveTo(x0, y0);
+        c2.lineTo(x1, y0);
+        c2.lineTo(xm, y1);
+      }
+      c2.closePath();
+      c2.fill();
+      c2.stroke();
+    };
+  } else if (shape === 'circle') {
+    drawTile = (col, row, color) => {
+      const r  = cellPx / 2;
+      const cx = originX + col * cellPx + cellPx / 2;
+      const cy = originY + row * cellPx + cellPx / 2;
+      c2.fillStyle = color;
+      c2.beginPath();
+      c2.arc(cx, cy, r, 0, Math.PI * 2);
+      c2.fill();
+      // No stroke: a same-color lineWidth=1 stroke bleeds 0.5px outside the arc
+      // (beyond r = cellPx/2), making circles visually exceed their cell boundary
+      // and causing edge-clipping artifacts. Fill alone gives a clean anti-aliased edge.
+    };
+  } else {
+    // Diamond (and any future shape added to TILE_SHAPES).
+    // No stroke: a same-color stroke bleeds 0.5px outside the path, painting
+    // the shape color into the background gap between tiles.
+    const shapeFn = TILE_SHAPES[shape] ?? TILE_SHAPES.square;
+    drawTile = (col, row, color) => {
+      c2.fillStyle = color;
+      shapeFn(c2, originX + col * cellPx, originY + row * cellPx, cellPx, col, row);
+    };
+  }
+
+  for (let row = 0; row < cellsY; row++) {
+    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+    for (let col = 0; col < cellsX; col++) {
+      const mx  = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
       const idx = motif[my][mx];
-      drawTile(ctx, col, row, palette[idx].color);
+      drawTile(col, row, palette[idx].color);
     }
   }
 }
 
-function fitCanvas() {
-  const dpr = window.devicePixelRatio || 1;
+function _renderHexagons(c2, motif, palette, cellPx, W, H, dpr, overdraw) {
+  // Hex radius = cellPx (circumradius). Horizontal pitch = sqrt(3)*r,
+  // vertical pitch = 1.5*r. Use ceil + 1 so overflow covers viewport edges.
+  const r    = cellPx;
+  const hexW = Math.sqrt(3) * r;
+  const cols = overdraw
+    ? Math.max(1, Math.ceil(W / hexW) + 1)
+    : Math.max(1, Math.floor(W / hexW));
+  const rows = overdraw
+    ? Math.max(1, Math.ceil(H / (1.5 * r)) + 1)
+    : Math.max(1, Math.floor(H / (1.5 * r)));
+  for (let row = 0; row < rows; row++) {
+    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+    for (let col = 0; col < cols; col++) {
+      const mx  = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+      const idx = motif[my][mx];
+      const color = palette[idx].color;
+      const cx = col * hexW + (row % 2 === 1 ? hexW / 2 : 0) + hexW / 2;
+      const cy = row * r * 1.5 + r;
+      c2.fillStyle   = color;
+      c2.strokeStyle = color;
+      c2.lineWidth   = 1;
+      TILE_SHAPES.hexagon(c2, cx, cy, r);
+      c2.stroke();
+    }
+  }
+}
+
+/**
+ * Render a 3×3 motif preview centered in the viewport with thin red guide
+ * lines on the motif boundaries so the user can verify seamless tiling.
+ */
+function renderPreviewRepeat() {
+  const W      = window.innerWidth;
+  const H      = window.innerHeight;
+  const margin = state.gridSize;
+  // Canvas is (W + 2×margin) × (H + 2×margin), offset by (-margin, -margin).
+  // All drawing coordinates are in canvas space: viewport (0,0) = canvas (margin, margin).
+  const cW     = W + margin * 2;
+  const cH     = H + margin * 2;
+  const dpr    = window.devicePixelRatio || 1;
+  const cellPx  = state.gridSize;
+  const motifPx = MOTIF_DIM * cellPx;
+  const REPEAT  = 3;
+  const totalPx = REPEAT * motifPx;
+  const { palette, motif } = _currentMotif();
+
+  // Neutral dark backdrop — fill the full padded canvas so no margin strip is left bare.
+  ctx.fillStyle = '#1a1a1f';
+  ctx.fillRect(0, 0, cW, cH);
+
+  // Center 3×3 grid in the full canvas (= visually centered in viewport)
+  const startX = Math.round((cW - totalPx) / 2);
+  const startY = Math.round((cH - totalPx) / 2);
+
+  if (state.tileShape === 'hexagon') {
+    // Hex preview: render the hex grid clipped to the preview square. The
+    // hex tessellation doesn't align with a square block, so the visual
+    // guide lines still mark cell-grid boundaries (16-cell intervals).
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(startX, startY, totalPx, totalPx);
+    ctx.clip();
+    ctx.translate(startX, startY);
+    _renderHexagons(ctx, motif, palette, cellPx, totalPx, totalPx, dpr, false);
+    ctx.restore();
+  } else {
+    _renderSquareCells(ctx, motif, palette, cellPx,
+      REPEAT * MOTIF_DIM, REPEAT * MOTIF_DIM, dpr, startX, startY);
+  }
+
+  // Guide lines at motif boundaries — only when grid overlay is on.
+  // Half-pixel offset so the stroke sits cleanly on integer pixels.
+  if (state.previewGrid) {
+    ctx.strokeStyle = 'rgba(255, 49, 49, 0.95)';
+    ctx.lineWidth   = 1.5;
+    for (let i = 1; i < REPEAT; i++) {
+      const px = Math.round(startX + i * motifPx) + 0.5;
+      const py = Math.round(startY + i * motifPx) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(px, startY);
+      ctx.lineTo(px, startY + totalPx);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(startX, py);
+      ctx.lineTo(startX + totalPx, py);
+      ctx.stroke();
+    }
+    // Outer border around the 3×3 block
+    ctx.lineWidth = 2;
+    ctx.strokeRect(startX + 0.5, startY + 0.5, totalPx - 1, totalPx - 1);
+  }
+}
+
+/**
+ * Build an offscreen canvas containing the clean-export tile (floor-based,
+ * native pixel scale, no DPR). Used by PNG, COPY, and the thumbnail snapshot.
+ * Returns { canvas, W, H } where W/H are the canvas dimensions.
+ */
+function buildExportCanvas() {
   const W = window.innerWidth;
   const H = window.innerHeight;
-  canvas.width  = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
-  canvas.style.width  = W + 'px';
-  canvas.style.height = H + 'px';
+  const cellPx  = state.gridSize;
+  const motifPx = MOTIF_DIM * cellPx;
+  let outW, outH;
+  if (state.tileShape === 'hexagon') {
+    // Hex doesn't naturally tile to a rectangle; use viewport size and accept
+    // that hex exports will have partial hexes at edges. The aesthetic still
+    // works because the rest of the grid is intact.
+    outW = W;
+    outH = H;
+  } else {
+    const motifsX = Math.max(1, Math.floor(W / motifPx));
+    const motifsY = Math.max(1, Math.floor(H / motifPx));
+    outW = motifsX * motifPx;
+    outH = motifsY * motifPx;
+  }
+  const off = document.createElement('canvas');
+  off.width = outW;
+  off.height = outH;
+  const octx = off.getContext('2d');
+  // dpr=1: this canvas is rendered at its true pixel size, no scaling.
+  renderToContext(octx, { W: outW, H: outH, dpr: 1, overdraw: false });
+  return { canvas: off, W: outW, H: outH };
+}
+
+function fitCanvas() {
+  const dpr    = window.devicePixelRatio || 1;
+  const W      = window.innerWidth;
+  const H      = window.innerHeight;
+  // Extend the canvas by one cell on every side so non-square tile shapes
+  // (circles, diamonds) whose geometry reaches the cell boundary are never
+  // clipped by the canvas edge. The canvas is positioned at (-margin, -margin)
+  // in viewport space; the browser's viewport naturally hides the overflow.
+  const margin = state.gridSize;
+  const cW     = W + margin * 2;
+  const cH     = H + margin * 2;
+  canvas.width        = Math.round(cW * dpr);
+  canvas.height       = Math.round(cH * dpr);
+  canvas.style.width  = cW + 'px';
+  canvas.style.height = cH + 'px';
+  canvas.style.left   = -margin + 'px';
+  canvas.style.top    = -margin + 'px';
+  canvas.style.right  = 'auto';
+  canvas.style.bottom = 'auto';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
@@ -848,35 +1060,40 @@ toggleBtn.addEventListener('keydown', e => {
 });
 collapseBtn.addEventListener('click', closePanel);
 
-// ---------- Background pill ----------
-bgPill.addEventListener('click', () => {
-  openColorPicker(bgPill, state.bg, hex => {
-    state.bg = hex;
-    bgPill.style.background = hex;
-    generate();
-  });
-});
-
 // ---------- Pattern color swatches ----------
-// Always renders exactly 3 pill slots.
-// Filled = color pill; clicking opens the custom picker below it.
-// Empty = dashed pill with "+"; clicking adds a color via picker.
+// Renders up to 4 pill slots. Position encodes weight: slot 0 = ground (4×),
+// slot 1 = 2×, slot 2 = 1×, slot 3 = 0.5×.
+// Mouse-drag reorders live: the dragged pill lifts as a ghost, a red-dashed
+// placeholder tracks the drop target in real time, other pills slide to make room.
+// Empty slots show a "+" to add a new color.
+
+let _swatchDrag = null;            // tracks an in-progress drag operation
+let _suppressNextSwatchClick = false;  // prevents spurious click after same-position drag
 
 function renderSwatches() {
   colorSwatchesEl.innerHTML = '';
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const isFilled = i < state.colors.length;
-    const col = isFilled ? state.colors[i] : null;
 
     const sw = document.createElement('div');
     sw.className = 'color-swatch' + (isFilled ? '' : ' empty');
 
     if (isFilled) {
-      sw.style.background = col;
+      sw.style.background = state.colors[i];
+      if (i === 0) sw.dataset.tooltip = 'grab me';
 
-      // Filled pill → open custom picker below it
+      // Mousedown starts watching for a drag; click fires naturally for quick taps.
+      sw.addEventListener('mousedown', e => {
+        if (e.button !== 0) return;
+        if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
+        if (state.colors.length < 2) return;
+        _beginSwatchDrag(e, i, sw);
+      });
+
+      // Click opens the color picker — suppressed only after a same-position drag.
       sw.addEventListener('click', e => {
+        if (_suppressNextSwatchClick) { _suppressNextSwatchClick = false; return; }
         if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         openColorPicker(sw, state.colors[i], hex => {
           state.colors[i] = hex;
@@ -890,7 +1107,7 @@ function renderSwatches() {
         const x = document.createElement('button');
         x.className = 'swatch-x';
         x.type = 'button';
-        x.title = 'Remove color';
+        x.title = 'Remove';
         x.textContent = '✕';
         x.addEventListener('click', e => {
           e.stopPropagation();
@@ -900,7 +1117,7 @@ function renderSwatches() {
           renderSwatches();
           generate();
         });
-        x.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+        x.addEventListener('mousedown', e => { e.stopPropagation(); }); // prevent drag-watch from triggering on ✕
         sw.appendChild(x);
       }
 
@@ -914,14 +1131,9 @@ function renderSwatches() {
       sw.addEventListener('click', () => {
         const seed = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
         openColorPicker(sw, seed, hex => {
-          // live preview only if slot is now filled (color already pushed)
-          if (state.colors[i]) {
-            state.colors[i] = hex;
-            generate();
-          }
+          if (state.colors[i]) { state.colors[i] = hex; generate(); }
         }, hex => {
-          // on Done: push the color (if not already there)
-          if (state.colors.length < 3 && !state.colors[i]) {
+          if (state.colors.length < 4 && !state.colors[i]) {
             state.colors.push(hex);
             renderSwatches();
             generate();
@@ -934,13 +1146,151 @@ function renderSwatches() {
   }
 }
 
+/**
+ * Begin a live mouse-drag reorder on a swatch pill.
+ *
+ * Phase 'watching': mouse is held but hasn't moved ≥4 px — no visual changes,
+ *   so a quick click still fires naturally (no preventDefault needed).
+ * Phase 'dragging': threshold crossed — ghost appears, placeholder tracks the
+ *   drop slot live in the flex row.
+ * On mouseup: commits reorder if pill moved, or restores it (same slot drops
+ *   suppress the next click event via _suppressNextSwatchClick).
+ * Escape key: calls _swatchDrag.cancel() to abort cleanly.
+ */
+function _beginSwatchDrag(e, srcIdx, swEl) {
+  const THRESH = 4;
+  const startX = e.clientX, startY = e.clientY;
+  let phase = 'watching';   // 'watching' → 'dragging'
+  let ghost = null, placeholder = null;
+  let offX = 0, offY = 0, swRect = null;
+
+  function beginActualDrag() {
+    phase  = 'dragging';
+    swRect = swEl.getBoundingClientRect();
+    offX   = startX - swRect.left;
+    offY   = startY - swRect.top;
+
+    // Transition cursor from grab → grabbing
+    document.body.classList.remove('swatch-watching');
+
+    // Ghost: floating visual copy that follows the cursor
+    ghost = document.createElement('div');
+    ghost.className = 'color-swatch swatch-ghost';
+    Object.assign(ghost.style, {
+      background:    state.colors[srcIdx],
+      position:      'fixed',
+      width:         swRect.width  + 'px',
+      height:        swRect.height + 'px',
+      left:          swRect.left   + 'px',
+      top:           swRect.top    + 'px',
+      pointerEvents: 'none',
+      zIndex:        '1000',
+    });
+    document.body.appendChild(ghost);
+    document.body.classList.add('swatch-dragging');
+
+    // Placeholder: red-dashed slot that marks the drop target in the flex row
+    placeholder = document.createElement('div');
+    placeholder.className = 'color-swatch swatch-placeholder';
+    swEl.replaceWith(placeholder);
+  }
+
+  function onMove(ev) {
+    if (phase === 'watching') {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) >= THRESH) beginActualDrag();
+      else return;
+    }
+    // phase === 'dragging'
+    ghost.style.left = (ev.clientX - offX) + 'px';
+    ghost.style.top  = (ev.clientY - offY) + 'px';
+
+    // Reposition placeholder: insert before the first child whose visual centre
+    // is to the right of the ghost's centre.
+    const ghostCx = ev.clientX - offX + swRect.width / 2;
+    let inserted = false;
+    for (const child of colorSwatchesEl.children) {
+      if (child === placeholder) continue;
+      const r = child.getBoundingClientRect();
+      if (ghostCx < r.left + r.width / 2) {
+        colorSwatchesEl.insertBefore(placeholder, child);
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) colorSwatchesEl.appendChild(placeholder);
+  }
+
+  function onUp() {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup',   onUp);
+
+    if (phase === 'watching') {
+      // Threshold never crossed — let the browser's click event fire normally.
+      document.body.classList.remove('swatch-watching');
+      _swatchDrag = null;
+      return;
+    }
+
+    // Tear down drag chrome
+    ghost.remove();
+    document.body.classList.remove('swatch-dragging');
+
+    // Determine destination index from placeholder position in the flex row.
+    const children = [...colorSwatchesEl.children];
+    const phIdx    = children.indexOf(placeholder);
+    let destIdx = 0;
+    for (let j = 0; j < phIdx; j++) {
+      if (!children[j].classList.contains('swatch-placeholder') &&
+          !children[j].classList.contains('empty')) destIdx++;
+    }
+
+    const didMove = destIdx !== srcIdx;
+    _swatchDrag = null;
+
+    if (didMove) {
+      const moved = state.colors.splice(srcIdx, 1)[0];
+      state.colors.splice(destIdx, 0, moved);
+      renderSwatches();
+      generate();
+    } else {
+      // Same-slot drop — restore swatch and kill the stray click that mouseup fires.
+      _suppressNextSwatchClick = true;
+      requestAnimationFrame(() => { _suppressNextSwatchClick = false; });
+      placeholder.replaceWith(swEl);
+    }
+  }
+
+  // Expose cancel() so the Escape key can abort a drag cleanly.
+  _swatchDrag = {
+    srcIdx,
+    cancel() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup',   onUp);
+      if (ghost) { ghost.remove(); ghost = null; }
+      document.body.classList.remove('swatch-watching');
+      document.body.classList.remove('swatch-dragging');
+      if (placeholder?.parentNode) placeholder.replaceWith(swEl);
+      _swatchDrag = null;
+    },
+  };
+
+  // Show grab cursor as soon as the user holds the mouse button down.
+  document.body.classList.add('swatch-watching');
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup',   onUp);
+}
+
 // ---------- Grid size slider (live preview) ----------
 gridSizeEl.addEventListener('input', e => {
   state.gridSize = parseInt(e.target.value, 10);
-  gridLabel.textContent = `${state.gridSize} px`;
+  gridLabel.textContent = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   generate();
 });
+// Grabbing cursor while dragging the slider
+gridSizeEl.addEventListener('mousedown', () => document.body.classList.add('slider-dragging'));
+window.addEventListener('mouseup', () => document.body.classList.remove('slider-dragging'));
 
 // ---------- Tile shape icons (fixed, evenly spaced, no scroll) ----------
 // SVGs at 22×22 — color controlled by currentColor; .opt-icon.active sets color:#000
@@ -1027,20 +1377,26 @@ function randomHex() {
   return '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
 }
 
-// Full randomize — bg, colors (1–3), tile shape, style, grid size, seed
+// Full randomize — colors (2–4), tile shape, style, grid size, seed
 function randomizeAll() {
   closeColorPicker();
-  state.bg        = randomHex();
-  const n         = 1 + Math.floor(Math.random() * 3);
-  state.colors    = Array.from({ length: n }, randomHex);
+  const n      = 2 + Math.floor(Math.random() * 3);   // 2–4 colors total
+  const ground = randomHex();
+  // Contrast safety: nudge each accent until visibly distinct from ground (ratio ≥ 2.5:1).
+  // Prevents invisible near-monochromatic palettes.
+  const accents = Array.from({ length: n - 1 }, () => ensureMinContrast(ground, randomHex()));
+  state.colors    = [ground, ...accents];
   state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
   state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
-  state.gridSize  = 4 + Math.floor(Math.random() * 61);
-  state.seed      = randomSeed();
+  // Randomize scale within the 4–24 px/cell range — but NOT while tile preview
+  // is on, so the user can compare seams across randomizations at a stable zoom.
+  if (!state.previewRepeat) {
+    state.gridSize = SCALE_MIN + Math.floor(Math.random() * (SCALE_MAX - SCALE_MIN + 1));
+  }
+  state.seed = randomSeed();
   // Sync UI to new state
-  bgPill.style.background = state.bg;
-  gridSizeEl.value        = String(state.gridSize);
-  gridLabel.textContent   = `${state.gridSize} px`;
+  gridSizeEl.value      = String(state.gridSize);
+  gridLabel.textContent = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1054,6 +1410,47 @@ function generateVariation() {
   generate();
 }
 
+// ---------- Preview-repeat toggle ----------
+// When ON, generate() will draw the motif 3×3 with thin guide lines marking
+// motif boundaries so the user can verify seamless tiling. When OFF (default),
+// generate() renders the full overdraw display canvas. Behavior is wired in a
+// later commit alongside the canvas-sizing rewrite.
+const previewToggleBtn = document.getElementById('preview-repeat');
+const previewGridBtn   = document.getElementById('preview-grid');
+const gridCtrlLabel    = document.getElementById('grid-ctrl-label');
+
+function applyPreviewToggleUI() {
+  if (!previewToggleBtn) return;
+  const on = !!state.previewRepeat;
+  previewToggleBtn.classList.toggle('active', on);
+  previewToggleBtn.textContent = on ? 'on' : 'off';
+  previewToggleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  // Grid label + toggle: slide in to the right of tile preview when it's on
+  if (gridCtrlLabel) gridCtrlLabel.hidden = !on;
+  if (previewGridBtn) {
+    previewGridBtn.hidden = !on;
+    previewGridBtn.classList.toggle('active', !!state.previewGrid);
+    previewGridBtn.textContent = state.previewGrid ? 'on' : 'off';
+    previewGridBtn.setAttribute('aria-pressed', state.previewGrid ? 'true' : 'false');
+  }
+}
+
+if (previewToggleBtn) {
+  previewToggleBtn.addEventListener('click', () => {
+    state.previewRepeat = !state.previewRepeat;
+    applyPreviewToggleUI();
+    generate();
+  });
+}
+if (previewGridBtn) {
+  previewGridBtn.addEventListener('click', () => {
+    state.previewGrid = !state.previewGrid;
+    applyPreviewToggleUI();
+    generate();
+  });
+}
+applyPreviewToggleUI();
+
 document.getElementById('btn-randomize').addEventListener('click', randomizeAll);
 document.getElementById('btn-generate').addEventListener('click', generateVariation);
 document.getElementById('btn-save').addEventListener('click', savePattern);
@@ -1064,18 +1461,20 @@ centerRandomize.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); randomizeAll(); }
 });
 
-// ---------- Export (PRESERVED logic, rewired to new buttons) ----------
+// ---------- Export (always uses buildExportCanvas → clean tile) ----------
 document.getElementById('btn-png').addEventListener('click', () => {
+  const { canvas: off } = buildExportCanvas();
   const link = document.createElement('a');
   link.download = `pixelgrid-${state.style}-${shortHex(state.seed)}.png`;
-  link.href = canvas.toDataURL('image/png');
+  link.href = off.toDataURL('image/png');
   link.click();
 });
 
 document.getElementById('btn-copy').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   try {
-    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const { canvas: off } = buildExportCanvas();
+    const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   } catch {
     const orig = btn.textContent;
@@ -1087,30 +1486,30 @@ document.getElementById('btn-copy').addEventListener('click', async (e) => {
 document.getElementById('btn-svg').addEventListener('click', exportAsSVG);
 
 function exportAsSVG() {
-  const tile = state.gridSize;
-  const w    = window.innerWidth;
-  const h    = window.innerHeight;
-  const palette = [
-    { color: state.bg, influence: 50 },
-    ...state.colors.map(c => ({ color: c, influence: 50 })),
-  ];
-  const rand   = mulberry32(state.seed);
-  const motif  = (MOTIFS[state.style] ?? MOTIFS.noise)(MOTIF_DIM, palette, rand);
-  const cols  = Math.max(1, Math.floor(w / tile));
-  const rows  = Math.max(1, Math.floor(h / tile));
-  const tW    = tile, tH = tile;
-  const offX  = (w - cols * tW) / 2;
-  const offY  = (h - rows * tH) / 2;
-  let inner = `<rect width="${w}" height="${h}" fill="${state.bg}"/>\n`;
-  for (let row = 0; row < rows; row++) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const cellPx  = state.gridSize;
+  const motifPx = MOTIF_DIM * cellPx;
+  // Floor-based clean tile, matching the raster export sizing.
+  const motifsX = Math.max(1, Math.floor(W / motifPx));
+  const motifsY = Math.max(1, Math.floor(H / motifPx));
+  const outW = motifsX * motifPx;
+  const outH = motifsY * motifPx;
+  const cellsX = motifsX * MOTIF_DIM;
+  const cellsY = motifsY * MOTIF_DIM;
+
+  const { palette, motif } = _currentMotif();
+
+  let inner = `<rect width="${outW}" height="${outH}" fill="${state.colors[0]}"/>\n`;
+  for (let row = 0; row < cellsY; row++) {
     const my = row % MOTIF_DIM;
-    for (let col = 0; col < cols; col++) {
+    for (let col = 0; col < cellsX; col++) {
       const mx    = col % MOTIF_DIM;
       const color = palette[motif[my][mx]].color;
-      inner += `<rect x="${+(offX + col * tW).toFixed(2)}" y="${+(offY + row * tH).toFixed(2)}" width="${+tW.toFixed(2)}" height="${+tH.toFixed(2)}" fill="${color}"/>\n`;
+      inner += `<rect x="${col * cellPx}" y="${row * cellPx}" width="${cellPx}" height="${cellPx}" fill="${color}"/>\n`;
     }
   }
-  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n${inner}</svg>`;
+  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}" viewBox="0 0 ${outW} ${outH}">\n${inner}</svg>`;
   const blob = new Blob([svgStr], { type: 'image/svg+xml' });
   const url  = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1123,6 +1522,7 @@ function exportAsSVG() {
 // ---------- Keyboard shortcuts ----------
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    if (_swatchDrag?.cancel) { _swatchDrag.cancel(); return; }
     if (_pickerEl) { closeColorPicker(); return; }
     closePanel();
     return;
@@ -1132,6 +1532,9 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space') {
     e.preventDefault();
     randomizeAll();
+  } else if (e.key === 'c' || e.key === 'C') {
+    e.preventDefault();
+    if (panelOpen) closePanel(); else openPanel();
   } else if (e.key === 'g' || e.key === 'G') {
     e.preventDefault();
     generateVariation();
@@ -1150,13 +1553,12 @@ window.addEventListener('resize', () => {
 // ---------- Config (PRESERVED) ----------
 function getConfig() {
   return {
-    version:   2,
+    version:   3,
     seed:      state.seed,
     gridSize:  state.gridSize,
     style:     state.style,
     tileShape: state.tileShape,
-    bg:        state.bg,
-    colors:    state.colors.slice(),
+    colors:    state.colors.slice(),  // 1–4 items; position 0 = ground color
   };
 }
 
@@ -1166,33 +1568,38 @@ function loadConfig(cfg) {
   if (!Number.isInteger(cfg.gridSize) || cfg.gridSize < 4 || cfg.gridSize > 64) return false;
   if (!STYLE_NAMES.includes(cfg.style)) return false;
   const hexRe = /^#[0-9a-fA-F]{6}$/;
-  let bg, colors;
-  if (cfg.version === 2) {
+  let colors;
+  if (cfg.version === 3) {
+    // v3: unified colors[] array; position 0 is the ground color.
+    if (!Array.isArray(cfg.colors) || cfg.colors.length < 1 || cfg.colors.length > 4) return false;
+    if (!cfg.colors.every(c => typeof c === 'string' && hexRe.test(c))) return false;
+    colors = cfg.colors.slice();
+  } else if (cfg.version === 2) {
+    // v2: separate bg + colors[]. Migrate: ground = bg, accents = colors.
     if (typeof cfg.bg !== 'string' || !hexRe.test(cfg.bg)) return false;
     if (!Array.isArray(cfg.colors) || cfg.colors.length < 1 || cfg.colors.length > 3) return false;
     if (!cfg.colors.every(c => typeof c === 'string' && hexRe.test(c))) return false;
-    bg = cfg.bg; colors = cfg.colors.slice();
+    colors = [cfg.bg, ...cfg.colors];
   } else if (cfg.version === 1 || Array.isArray(cfg.palette)) {
+    // v1: palette array sorted by influence. Highest = ground, rest = accents.
     if (!Array.isArray(cfg.palette) || cfg.palette.length < 1) return false;
     for (const p of cfg.palette) { if (!p || !hexRe.test(p.color)) return false; }
     const sorted = [...cfg.palette].sort((a, b) => b.influence - a.influence);
-    bg = sorted[0].color;
-    colors = sorted.slice(1, 4).map(p => p.color);
-    if (colors.length === 0) colors = [sorted[0].color];
+    colors = sorted.slice(0, 4).map(p => p.color);
+    if (colors.length === 0) return false;
   } else {
     return false;
   }
 
   state.seed      = cfg.seed >>> 0;
-  state.gridSize  = cfg.gridSize;
+  // Clamp legacy saves (old slider went up to 64) into the new 4–24 range.
+  state.gridSize  = Math.max(SCALE_MIN, Math.min(SCALE_MAX, cfg.gridSize));
   state.style     = cfg.style;
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
-  state.bg        = bg;
   state.colors    = colors;
 
-  bgPill.style.background = state.bg;
-  gridSizeEl.value        = String(state.gridSize);
-  gridLabel.textContent   = `${state.gridSize} px`;
+  gridSizeEl.value      = String(state.gridSize);
+  gridLabel.textContent = `${state.gridSize} px/cell`;
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1202,13 +1609,15 @@ function loadConfig(cfg) {
 }
 
 // ---------- Thumbnail (FILLS slot, no letterbox) ----------
+// Always thumbnails from the clean export canvas so saves capture a true
+// tile sample regardless of whether preview-repeat is on.
 function makeThumbnail(size = 200) {
+  const { canvas: source } = buildExportCanvas();
   const off  = document.createElement('canvas');
   off.width  = size; off.height = size;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-  // Fill the slot edge-to-edge (per spec)
-  octx.drawImage(canvas, 0, 0, size, size);
+  octx.drawImage(source, 0, 0, size, size);
   return off.toDataURL('image/png');
 }
 
@@ -1276,9 +1685,8 @@ if (typeof ResizeObserver !== 'undefined') {
 // ---------- Init ----------
 loadSaves();
 
-bgPill.style.background = state.bg;
-gridSizeEl.value        = String(state.gridSize);
-gridLabel.textContent   = `${state.gridSize} px`;
+gridSizeEl.value      = String(state.gridSize);
+gridLabel.textContent = `${state.gridSize} px/cell`;
 
 renderSwatches();
 buildTileShapeList();

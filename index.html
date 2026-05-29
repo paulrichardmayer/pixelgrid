@@ -15,7 +15,7 @@
   <canvas id="canvas"></canvas>
 
   <!-- ============ CENTERED RANDOMIZE BUTTON (visible only when panel closed) ============ -->
-  <div id="center-randomize" role="button" tabindex="0" aria-label="Randomize">
+  <div id="center-randomize" data-tooltip="randomize [space]" role="button" tabindex="0" aria-label="Randomize">
     <svg width="85" height="85" viewBox="0 0 85 85" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M77.5 69.167H70.833V75.833H59.167V82.5H25.833V75.833H14.167V69.167H7.5V57.5H2.5V27.5H7.5V15.833H14.167V9.16699H25.833V2.5H59.167V9.16699H70.833V15.833H77.5V27.5H82.5V57.5H77.5V69.167Z" fill="white"/>
       <path d="M61.667 0V6.66699H73.333V13.333H80V25H85V60H80V71.667H73.333V78.333H61.667V85H23.333V78.333H11.667V71.667H5V60H0V25H5V13.333H11.667V6.66699H23.333V0H61.667ZM28.333 11.667H16.667V18.333H10V30H5V55H10V66.667H16.667V73.333H28.333V80H56.667V73.333H68.333V66.667H75V55H80V30H75V18.333H68.333V11.667H56.667V5H28.333V11.667Z" fill="black"/>
@@ -24,7 +24,7 @@
   </div>
 
   <!-- ============ TOGGLE BUTTON (visible when panel CLOSED) ============ -->
-  <div id="toggle-btn" role="button" tabindex="0" aria-label="Open controls">
+  <div id="toggle-btn" data-tooltip="controls [c]" role="button" tabindex="0" aria-label="Open controls">
     <svg width="85" height="85" viewBox="0 0 85 85" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M77.5 69.167H70.833V75.833H59.167V82.5H25.833V75.833H14.167V69.167H7.5V57.5H2.5V27.5H7.5V15.833H14.167V9.16699H25.833V2.5H59.167V9.16699H70.833V15.833H77.5V27.5H82.5V57.5H77.5V69.167Z" fill="white"/>
       <path d="M61.667 0V6.66699H73.333V13.333H80V25H85V60H80V71.667H73.333V78.333H61.667V85H23.333V78.333H11.667V71.667H5V60H0V25H5V13.333H11.667V6.66699H23.333V0H61.667ZM28.333 11.667H16.667V18.333H10V30H5V55H10V66.667H16.667V73.333H28.333V80H56.667V73.333H68.333V66.667H75V55H80V30H75V18.333H68.333V11.667H56.667V5H28.333V11.667Z" fill="black"/>
@@ -51,22 +51,26 @@
         </svg>
         <span class="controls-title header-cell">controls</span>
 
-        <!-- Row: background -->
-        <span class="ctrl-label">background</span>
-        <div class="bg-pill" id="bg-pill" style="background:#dfff00"></div>
+        <!-- Row: tile-preview toggle + grid toggle (grid appears inline when preview is on) -->
+        <span class="ctrl-label">tile preview</span>
+        <div class="preview-controls">
+          <button type="button" class="preview-toggle" id="preview-repeat" aria-pressed="false">off</button>
+          <span class="preview-label" id="grid-ctrl-label" hidden>grid</span>
+          <button type="button" class="preview-toggle" id="preview-grid" aria-pressed="true" hidden>on</button>
+        </div>
 
         <!-- Row: pattern colors -->
         <span class="ctrl-label">pattern colors</span>
         <div class="color-swatches" id="color-swatches"></div>
 
-        <!-- Row: grid size + value -->
-        <span class="ctrl-label">grid size</span>
-        <span class="ctrl-value" id="grid-label">24 px</span>
+        <!-- Row: scale + value (px/cell, 1 cell = one logical 16×16 motif unit) -->
+        <span class="ctrl-label">scale</span>
+        <span class="ctrl-value" id="grid-label">8 px/cell</span>
 
-        <!-- Row: Slider (full width) -->
+        <!-- Row: Slider (full width) — pixels per logical motif cell (4–24) -->
         <div class="slider-row">
           <div class="slider-track" id="slider-track">
-            <input type="range" id="grid-size" min="4" max="64" value="24" step="1" />
+            <input type="range" id="grid-size" min="4" max="24" value="8" step="1" />
             <div class="slider-thumb" id="slider-thumb"></div>
           </div>
         </div>
