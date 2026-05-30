@@ -184,7 +184,10 @@ html, body {
 #collapse-btn::after {
   content: '';
   position: absolute;
-  inset: -28px;                /* +28px on every side ~ a ~97×68 hit zone */
+  top: -28px;
+  right: -60px;   /* reaches well into the "controls" title column */
+  bottom: -28px;
+  left: -28px;
 }
 #collapse-btn:hover  { transform: scale(1.06); }
 #collapse-btn:active { transform: scale(0.95); }
@@ -194,6 +197,7 @@ html, body {
   color: #000;
   line-height: 1;
   justify-self: start;
+  cursor: pointer;   /* clicking the title also closes the panel */
 }
 
 .ctrl-label {

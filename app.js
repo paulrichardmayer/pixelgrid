@@ -1059,6 +1059,8 @@ toggleBtn.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPanel(); }
 });
 collapseBtn.addEventListener('click', closePanel);
+// "controls" title text also closes the panel — extends the hit area naturally
+document.querySelector('.controls-title').addEventListener('click', closePanel);
 
 // ---------- Pattern color swatches ----------
 // Renders up to 4 pill slots. Position encodes weight: slot 0 = ground (4×),
@@ -1081,7 +1083,7 @@ function renderSwatches() {
 
     if (isFilled) {
       sw.style.background = state.colors[i];
-      if (i === 0) sw.dataset.tooltip = 'grab me';
+      if (i === 0 && state.colors.length >= 2) sw.dataset.tooltip = 'grab me';
 
       // Mousedown starts watching for a drag; click fires naturally for quick taps.
       sw.addEventListener('mousedown', e => {
@@ -1385,9 +1387,10 @@ function randomizeAll() {
   // Contrast safety: nudge each accent until visibly distinct from ground (ratio ≥ 2.5:1).
   // Prevents invisible near-monochromatic palettes.
   const accents = Array.from({ length: n - 1 }, () => ensureMinContrast(ground, randomHex()));
-  state.colors    = [ground, ...accents];
-  state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
-  state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
+  state.colors     = [ground, ...accents];
+  state.tileShape  = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
+  state.style      = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
+  state.previewGrid = true;  // reset grid guides to on (default) with each full randomize
   // Randomize scale within the 4–24 px/cell range — but NOT while tile preview
   // is on, so the user can compare seams across randomizations at a stable zoom.
   if (!state.previewRepeat) {
