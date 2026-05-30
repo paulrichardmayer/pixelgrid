@@ -1086,9 +1086,10 @@ function renderSwatches() {
       sw.style.background = state.colors[i];
       if (i === 0 && state.colors.length >= 2) sw.dataset.tooltip = 'grab me';
 
-      // Mousedown starts watching for a drag; click fires naturally for quick taps.
-      sw.addEventListener('mousedown', e => {
-        if (e.button !== 0) return;
+      // Pointerdown starts watching for a drag; click fires naturally for quick taps.
+      // Pointer Events unify mouse + touch + pen so reordering works on touchscreens.
+      sw.addEventListener('pointerdown', e => {
+        if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         if (state.colors.length < 2) return;
         _beginSwatchDrag(e, i, sw);
@@ -1120,7 +1121,7 @@ function renderSwatches() {
           renderSwatches();
           generate();
         });
-        x.addEventListener('mousedown', e => { e.stopPropagation(); }); // prevent drag-watch from triggering on ✕
+        x.addEventListener('pointerdown', e => { e.stopPropagation(); }); // prevent drag-watch from triggering on ✕
         sw.appendChild(x);
       }
 
@@ -1204,7 +1205,8 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
       if (Math.hypot(ev.clientX - startX, ev.clientY - startY) >= THRESH) beginActualDrag();
       else return;
     }
-    // phase === 'dragging'
+    // phase === 'dragging' — block touch scroll/zoom while dragging the ghost
+    if (ev.cancelable) ev.preventDefault();
     ghost.style.left = (ev.clientX - offX) + 'px';
     ghost.style.top  = (ev.clientY - offY) + 'px';
 
@@ -1225,8 +1227,9 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
   }
 
   function onUp() {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup',   onUp);
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup',   onUp);
+    window.removeEventListener('pointercancel', onUp);
 
     if (phase === 'watching') {
       // Threshold never crossed — let the browser's click event fire normally.
@@ -1268,8 +1271,9 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
   _swatchDrag = {
     srcIdx,
     cancel() {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup',   onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup',   onUp);
+      window.removeEventListener('pointercancel', onUp);
       if (ghost) { ghost.remove(); ghost = null; }
       document.body.classList.remove('swatch-watching');
       document.body.classList.remove('swatch-dragging');
@@ -1278,11 +1282,12 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
     },
   };
 
-  // Show grab cursor as soon as the user holds the mouse button down.
+  // Show grab cursor as soon as the user holds the pointer down.
   document.body.classList.add('swatch-watching');
 
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup',   onUp);
+  window.addEventListener('pointermove', onMove, { passive: false });
+  window.addEventListener('pointerup',   onUp);
+  window.addEventListener('pointercancel', onUp);
 }
 
 // ---------- Grid size slider (live preview) ----------
