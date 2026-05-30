@@ -1059,6 +1059,9 @@ toggleBtn.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPanel(); }
 });
 collapseBtn.addEventListener('click', closePanel);
+collapseBtn.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); closePanel(); }
+});
 // "controls" title text also closes the panel — extends the hit area naturally
 document.querySelector('.controls-title').addEventListener('click', closePanel);
 
@@ -1129,6 +1132,7 @@ function renderSwatches() {
       plus.className = 'empty-plus';
       plus.textContent = '+';
       sw.appendChild(plus);
+      sw.dataset.tooltip = 'add color';
 
       sw.addEventListener('click', () => {
         const seed = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
@@ -1475,12 +1479,15 @@ document.getElementById('btn-png').addEventListener('click', () => {
 
 document.getElementById('btn-copy').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
+  const orig = btn.dataset.label || btn.textContent;
+  btn.dataset.label = orig;
   try {
     const { canvas: off } = buildExportCanvas();
     const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    btn.textContent = 'copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
   } catch {
-    const orig = btn.textContent;
     btn.textContent = 'unavailable';
     setTimeout(() => { btn.textContent = orig; }, 2000);
   }
