@@ -142,6 +142,8 @@ html, body {
   width: 420px;
   font-family: 'Host Grotesk', sans-serif;
   font-weight: 600;
+  user-select: none;
+  -webkit-user-select: none;
   z-index: 90;
   /* IMPORTANT: keep overflow visible so the color picker popup can overflow */
   overflow: visible;
@@ -175,16 +177,23 @@ html, body {
 }
 #collapse-btn {
   cursor: pointer;
-  display: block;
+  display: flex;
+  align-items: center;
+  width: max-content;          /* hug the icon, don't stretch the grid column */
+  justify-self: start;
   position: relative;          /* anchor for the ::after hit-area */
   overflow: visible;
   transition: transform 0.12s ease;
 }
+#collapse-btn svg { display: block; pointer-events: none; }
 /* Invisible pseudo-element extends the clickable area without resizing the SVG */
 #collapse-btn::after {
   content: '';
   position: absolute;
-  inset: -28px;                /* +28px on every side ~ a ~97×68 hit zone */
+  top: -28px;
+  right: -22px;   /* stays clear of the "controls" title text */
+  bottom: -28px;
+  left: -28px;
 }
 #collapse-btn:hover  { transform: scale(1.06); }
 #collapse-btn:active { transform: scale(0.95); }

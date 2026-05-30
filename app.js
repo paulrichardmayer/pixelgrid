@@ -1059,6 +1059,9 @@ toggleBtn.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPanel(); }
 });
 collapseBtn.addEventListener('click', closePanel);
+collapseBtn.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); closePanel(); }
+});
 
 // ---------- Pattern color swatches ----------
 // Renders up to 4 pill slots. Position encodes weight: slot 0 = ground (4×),
@@ -1081,7 +1084,7 @@ function renderSwatches() {
 
     if (isFilled) {
       sw.style.background = state.colors[i];
-      if (i === 0) sw.dataset.tooltip = 'grab me';
+      if (i === 0 && state.colors.length >= 2) sw.dataset.tooltip = 'grab me';
 
       // Mousedown starts watching for a drag; click fires naturally for quick taps.
       sw.addEventListener('mousedown', e => {
@@ -1127,6 +1130,7 @@ function renderSwatches() {
       plus.className = 'empty-plus';
       plus.textContent = '+';
       sw.appendChild(plus);
+      sw.dataset.tooltip = 'add color';
 
       sw.addEventListener('click', () => {
         const seed = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
@@ -1385,9 +1389,10 @@ function randomizeAll() {
   // Contrast safety: nudge each accent until visibly distinct from ground (ratio ≥ 2.5:1).
   // Prevents invisible near-monochromatic palettes.
   const accents = Array.from({ length: n - 1 }, () => ensureMinContrast(ground, randomHex()));
-  state.colors    = [ground, ...accents];
-  state.tileShape = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
-  state.style     = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
+  state.colors     = [ground, ...accents];
+  state.tileShape  = SHAPE_NAMES[Math.floor(Math.random() * SHAPE_NAMES.length)];
+  state.style      = STYLE_NAMES[Math.floor(Math.random() * STYLE_NAMES.length)];
+  state.previewGrid = true;  // reset grid guides to on (default) with each full randomize
   // Randomize scale within the 4–24 px/cell range — but NOT while tile preview
   // is on, so the user can compare seams across randomizations at a stable zoom.
   if (!state.previewRepeat) {
@@ -1472,12 +1477,15 @@ document.getElementById('btn-png').addEventListener('click', () => {
 
 document.getElementById('btn-copy').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
+  const orig = btn.dataset.label || btn.textContent;
+  btn.dataset.label = orig;
   try {
     const { canvas: off } = buildExportCanvas();
     const blob = await new Promise(res => off.toBlob(res, 'image/png'));
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    btn.textContent = 'copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
   } catch {
-    const orig = btn.textContent;
     btn.textContent = 'unavailable';
     setTimeout(() => { btn.textContent = orig; }, 2000);
   }
