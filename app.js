@@ -1062,8 +1062,6 @@ collapseBtn.addEventListener('click', closePanel);
 collapseBtn.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); closePanel(); }
 });
-// "controls" title text also closes the panel — extends the hit area naturally
-document.querySelector('.controls-title').addEventListener('click', closePanel);
 
 // ---------- Pattern color swatches ----------
 // Renders up to 4 pill slots. Position encodes weight: slot 0 = ground (4×),

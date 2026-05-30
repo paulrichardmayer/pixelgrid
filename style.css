@@ -142,6 +142,8 @@ html, body {
   width: 420px;
   font-family: 'Host Grotesk', sans-serif;
   font-weight: 600;
+  user-select: none;
+  -webkit-user-select: none;
   z-index: 90;
   /* IMPORTANT: keep overflow visible so the color picker popup can overflow */
   overflow: visible;
@@ -189,7 +191,7 @@ html, body {
   content: '';
   position: absolute;
   top: -28px;
-  right: -60px;   /* reaches well into the "controls" title column */
+  right: -22px;   /* stays clear of the "controls" title text */
   bottom: -28px;
   left: -28px;
 }
@@ -201,7 +203,6 @@ html, body {
   color: #000;
   line-height: 1;
   justify-self: start;
-  cursor: pointer;   /* clicking the title also closes the panel */
 }
 
 .ctrl-label {
