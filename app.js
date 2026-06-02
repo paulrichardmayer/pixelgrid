@@ -1071,7 +1071,7 @@ collapseBtn.addEventListener('keydown', e => {
 // Empty slots show a "+" to add a new color.
 
 let _swatchDrag = null;            // tracks an in-progress drag operation
-let _suppressNextSwatchClick = false;  // prevents spurious click after same-position drag
+let _suppressNextSwatchClick = null;   // holds the specific swatch el whose next click to swallow
 
 function renderSwatches() {
   colorSwatchesEl.innerHTML = '';
@@ -1096,7 +1096,7 @@ function renderSwatches() {
 
       // Click opens the color picker — suppressed only after a same-position drag.
       sw.addEventListener('click', e => {
-        if (_suppressNextSwatchClick) { _suppressNextSwatchClick = false; return; }
+        if (_suppressNextSwatchClick === sw) { _suppressNextSwatchClick = null; return; }
         if (e.target.classList.contains('swatch-x') || e.target.closest?.('.swatch-x')) return;
         openColorPicker(sw, state.colors[i], hex => {
           state.colors[i] = hex;
@@ -1257,9 +1257,12 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
       renderSwatches();
       generate();
     } else {
-      // Same-slot drop — restore swatch and kill the stray click that mouseup fires.
-      _suppressNextSwatchClick = true;
-      requestAnimationFrame(() => { _suppressNextSwatchClick = false; });
+      // Same-slot drop — restore swatch and kill the stray click that mouseup
+      // fires on THIS swatch only (not whichever swatch is clicked next).
+      _suppressNextSwatchClick = swEl;
+      requestAnimationFrame(() => {
+        if (_suppressNextSwatchClick === swEl) _suppressNextSwatchClick = null;
+      });
       placeholder.replaceWith(swEl);
     }
   }
@@ -1409,9 +1412,27 @@ function randomizeAll() {
   generate();
 }
 
-// Generate variation — keep all params, just new seed
+// Generate variation — keep all params, just new seed.
+// Several styles have tiny discrete parameter spaces (plaid: 2 widths,
+// diagonal: 3, checker: 4 …), so a fresh random seed can produce a motif
+// that's byte-for-byte identical to the current one — making the button
+// look like it "did nothing". Fingerprint the motif and reroll the seed
+// (up to 20 tries) until the output actually changes.
+function _motifFingerprint() {
+  const { motif } = _currentMotif();
+  let h = 2166136261;                       // FNV-1a over all 16×16 cells
+  for (let y = 0; y < MOTIF_DIM; y++)
+    for (let x = 0; x < MOTIF_DIM; x++)
+      h = Math.imul(h ^ motif[y][x], 16777619);
+  return h >>> 0;
+}
 function generateVariation() {
-  state.seed = randomSeed();
+  const prev = _motifFingerprint();
+  let attempts = 0;
+  do {
+    state.seed = randomSeed();
+    attempts++;
+  } while (_motifFingerprint() === prev && attempts < 20);
   generate();
 }
 
@@ -1493,28 +1514,91 @@ document.getElementById('btn-copy').addEventListener('click', async (e) => {
 
 document.getElementById('btn-svg').addEventListener('click', exportAsSVG);
 
+// Emit one SVG element for a square-grid tile. Mirrors the per-shape canvas
+// drawing in _renderSquareCells so the SVG matches the on-screen render.
+// triangle gets a same-color hairline stroke (as the canvas does) to seal the
+// seam between adjacent triangles; circle/diamond/square fill cleanly without.
+function _svgSquareShape(shape, px, py, size, col, row, color) {
+  switch (shape) {
+    case 'circle': {
+      const r = size / 2;
+      return `<circle cx="${px + r}" cy="${py + r}" r="${r}" fill="${color}"/>\n`;
+    }
+    case 'triangle': {
+      const xm = px + size / 2, x1 = px + size, y0 = py, y1 = py + size;
+      const pts = (col + row) % 2 === 0
+        ? `${xm},${y0} ${x1},${y1} ${px},${y1}`
+        : `${px},${y0} ${x1},${y0} ${xm},${y1}`;
+      return `<polygon points="${pts}" fill="${color}" stroke="${color}" stroke-width="1"/>\n`;
+    }
+    case 'diamond': {
+      const cx = px + size / 2, cy = py + size / 2, r = size / 2;
+      const pts = `${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`;
+      return `<polygon points="${pts}" fill="${color}"/>\n`;
+    }
+    default: // square
+      return `<rect x="${px}" y="${py}" width="${size}" height="${size}" fill="${color}"/>\n`;
+  }
+}
+
+// Emit the hexagon grid as SVG. Mirrors _renderHexagons with overdraw=false so
+// it matches the PNG export sizing (floor-based cols/rows, viewport-sized).
+function _svgHexagons(motif, palette, cellPx, W, H) {
+  const r    = cellPx;
+  const hexW = Math.sqrt(3) * r;
+  const cols = Math.max(1, Math.floor(W / hexW));
+  const rows = Math.max(1, Math.floor(H / (1.5 * r)));
+  let out = '';
+  for (let row = 0; row < rows; row++) {
+    const my = ((row % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+    for (let col = 0; col < cols; col++) {
+      const mx    = ((col % MOTIF_DIM) + MOTIF_DIM) % MOTIF_DIM;
+      const color = palette[motif[my][mx]].color;
+      const cx = col * hexW + (row % 2 === 1 ? hexW / 2 : 0) + hexW / 2;
+      const cy = row * r * 1.5 + r;
+      let pts = '';
+      for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i - Math.PI / 6;
+        pts += `${(cx + r * Math.cos(angle)).toFixed(2)},${(cy + r * Math.sin(angle)).toFixed(2)} `;
+      }
+      out += `<polygon points="${pts.trim()}" fill="${color}" stroke="${color}" stroke-width="1"/>\n`;
+    }
+  }
+  return out;
+}
+
 function exportAsSVG() {
   const W = window.innerWidth;
   const H = window.innerHeight;
   const cellPx  = state.gridSize;
   const motifPx = MOTIF_DIM * cellPx;
-  // Floor-based clean tile, matching the raster export sizing.
-  const motifsX = Math.max(1, Math.floor(W / motifPx));
-  const motifsY = Math.max(1, Math.floor(H / motifPx));
-  const outW = motifsX * motifPx;
-  const outH = motifsY * motifPx;
-  const cellsX = motifsX * MOTIF_DIM;
-  const cellsY = motifsY * MOTIF_DIM;
-
+  const shape   = state.tileShape;
+  const ground  = state.colors[0];
   const { palette, motif } = _currentMotif();
 
-  let inner = `<rect width="${outW}" height="${outH}" fill="${state.colors[0]}"/>\n`;
-  for (let row = 0; row < cellsY; row++) {
-    const my = row % MOTIF_DIM;
-    for (let col = 0; col < cellsX; col++) {
-      const mx    = col % MOTIF_DIM;
-      const color = palette[motif[my][mx]].color;
-      inner += `<rect x="${col * cellPx}" y="${row * cellPx}" width="${cellPx}" height="${cellPx}" fill="${color}"/>\n`;
+  let outW, outH, inner;
+  if (shape === 'hexagon') {
+    // Hex doesn't tile to a whole-motif rectangle; use viewport size (matches PNG).
+    outW = W;
+    outH = H;
+    inner  = `<rect width="${outW}" height="${outH}" fill="${ground}"/>\n`;
+    inner += _svgHexagons(motif, palette, cellPx, outW, outH);
+  } else {
+    // Floor-based clean tile, matching the raster export sizing.
+    const motifsX = Math.max(1, Math.floor(W / motifPx));
+    const motifsY = Math.max(1, Math.floor(H / motifPx));
+    outW = motifsX * motifPx;
+    outH = motifsY * motifPx;
+    const cellsX = motifsX * MOTIF_DIM;
+    const cellsY = motifsY * MOTIF_DIM;
+    inner = `<rect width="${outW}" height="${outH}" fill="${ground}"/>\n`;
+    for (let row = 0; row < cellsY; row++) {
+      const my = row % MOTIF_DIM;
+      for (let col = 0; col < cellsX; col++) {
+        const mx    = col % MOTIF_DIM;
+        const color = palette[motif[my][mx]].color;
+        inner += _svgSquareShape(shape, col * cellPx, row * cellPx, cellPx, col, row, color);
+      }
     }
   }
   const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}" viewBox="0 0 ${outW} ${outH}">\n${inner}</svg>`;
@@ -1536,7 +1620,9 @@ document.addEventListener('keydown', e => {
     return;
   }
   const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  // BUTTON included so Space activates a focused panel button (e.g. "save")
+  // instead of being hijacked into a global randomize.
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
   if (e.code === 'Space') {
     e.preventDefault();
     randomizeAll();
