@@ -680,64 +680,77 @@ function _renderHexagons(c2, motif, palette, cellPx, W, H, dpr, overdraw) {
  * lines on the motif boundaries so the user can verify seamless tiling.
  */
 function renderPreviewRepeat() {
-  const W      = window.innerWidth;
-  const H      = window.innerHeight;
-  const margin = state.gridSize;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const margin  = state.gridSize;
   // Canvas is (W + 2×margin) × (H + 2×margin), offset by (-margin, -margin).
-  // All drawing coordinates are in canvas space: viewport (0,0) = canvas (margin, margin).
-  const cW     = W + margin * 2;
-  const cH     = H + margin * 2;
-  const dpr    = window.devicePixelRatio || 1;
+  const cW      = W + margin * 2;
+  const cH      = H + margin * 2;
+  const dpr     = window.devicePixelRatio || 1;
   const cellPx  = state.gridSize;
   const motifPx = MOTIF_DIM * cellPx;
-  const REPEAT  = 3;
-  const totalPx = REPEAT * motifPx;
+
+  // Fixed preview square — 70% of the shorter viewport dimension, independent
+  // of gridSize so the scale slider changes pattern DENSITY only, never the
+  // preview window size. This also prevents the overflow that occurred at large
+  // scales on narrower screens, where startX went negative and the visible
+  // portion started mid-motif (the intermittent "pattern changes completely"
+  // bug when entering tile preview).
+  const PREVIEW_PX = Math.round(Math.min(W, H) * 0.70);
+
   const { palette, motif } = _currentMotif();
 
-  // Neutral dark backdrop — fill the full padded canvas so no margin strip is left bare.
+  // Neutral dark backdrop — fill the full padded canvas.
   ctx.fillStyle = '#1a1a1f';
   ctx.fillRect(0, 0, cW, cH);
 
-  // Center 3×3 grid in the full canvas (= visually centered in viewport)
-  const startX = Math.round((cW - totalPx) / 2);
-  const startY = Math.round((cH - totalPx) / 2);
+  // Center the fixed preview square in the padded canvas.
+  const startX = Math.round((cW - PREVIEW_PX) / 2);
+  const startY = Math.round((cH - PREVIEW_PX) / 2);
+
+  // Always clip to the preview area — tiles never overflow regardless of scale.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(startX, startY, PREVIEW_PX, PREVIEW_PX);
+  ctx.clip();
 
   if (state.tileShape === 'hexagon') {
-    // Hex preview: render the hex grid clipped to the preview square. The
-    // hex tessellation doesn't align with a square block, so the visual
-    // guide lines still mark cell-grid boundaries (16-cell intervals).
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(startX, startY, totalPx, totalPx);
-    ctx.clip();
     ctx.translate(startX, startY);
-    _renderHexagons(ctx, motif, palette, cellPx, totalPx, totalPx, dpr, false);
-    ctx.restore();
+    // overdraw=true: hex rows/cols are ceil+1 so the fixed area is always filled.
+    _renderHexagons(ctx, motif, palette, cellPx, PREVIEW_PX, PREVIEW_PX, dpr, true);
   } else {
+    // Enough full motifs to fill PREVIEW_PX, plus 1 for right/bottom edge overdraw.
+    const motifsN    = Math.ceil(PREVIEW_PX / motifPx) + 1;
+    const totalCells = motifsN * MOTIF_DIM;
     _renderSquareCells(ctx, motif, palette, cellPx,
-      REPEAT * MOTIF_DIM, REPEAT * MOTIF_DIM, dpr, startX, startY);
+      totalCells, totalCells, dpr, startX, startY);
   }
 
-  // Guide lines at motif boundaries — only when grid overlay is on.
-  // Half-pixel offset so the stroke sits cleanly on integer pixels.
+  ctx.restore();  // removes both the clip and any translate
+
+  // Guide lines at every motif boundary inside the preview area.
+  // At large scale (few motifs visible) only 1–2 lines appear; at small scale
+  // (many motifs) more lines appear — both correctly show where seams are.
   if (state.previewGrid) {
     ctx.strokeStyle = 'rgba(255, 49, 49, 0.95)';
     ctx.lineWidth   = 1.5;
-    for (let i = 1; i < REPEAT; i++) {
-      const px = Math.round(startX + i * motifPx) + 0.5;
-      const py = Math.round(startY + i * motifPx) + 0.5;
+    for (let x = motifPx; x < PREVIEW_PX; x += motifPx) {
+      const px = Math.round(startX + x) + 0.5;
       ctx.beginPath();
       ctx.moveTo(px, startY);
-      ctx.lineTo(px, startY + totalPx);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(startX, py);
-      ctx.lineTo(startX + totalPx, py);
+      ctx.lineTo(px, startY + PREVIEW_PX);
       ctx.stroke();
     }
-    // Outer border around the 3×3 block
+    for (let y = motifPx; y < PREVIEW_PX; y += motifPx) {
+      const py = Math.round(startY + y) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(startX, py);
+      ctx.lineTo(startX + PREVIEW_PX, py);
+      ctx.stroke();
+    }
+    // Outer border
     ctx.lineWidth = 2;
-    ctx.strokeRect(startX + 0.5, startY + 0.5, totalPx - 1, totalPx - 1);
+    ctx.strokeRect(startX + 0.5, startY + 0.5, PREVIEW_PX - 1, PREVIEW_PX - 1);
   }
 }
 
