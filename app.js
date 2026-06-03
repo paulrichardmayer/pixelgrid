@@ -34,6 +34,12 @@ const state = {
 let saveSlots = new Array(SAVE_SLOTS).fill(null);
 let saveCount = 0;
 
+// Tile-preview zoom multiplier. Only active while state.previewRepeat is on.
+// The scale slider drives this instead of state.gridSize in preview mode,
+// so the pattern repeat is frozen while the user zooms the 3×3 swatch.
+// Resets to 1 when entering/exiting tile preview.
+let previewZoom = 1;
+
 // ---------- Utilities ----------
 function randomSeed() {
   return Math.floor(Math.random() * 0xffffffff) >>> 0;
@@ -687,16 +693,13 @@ function renderPreviewRepeat() {
   const cW      = W + margin * 2;
   const cH      = H + margin * 2;
   const dpr     = window.devicePixelRatio || 1;
-  const cellPx  = state.gridSize;
-  const motifPx = MOTIF_DIM * cellPx;
-
-  // Fixed preview square — 70% of the shorter viewport dimension, independent
-  // of gridSize so the scale slider changes pattern DENSITY only, never the
-  // preview window size. This also prevents the overflow that occurred at large
-  // scales on narrower screens, where startX went negative and the visible
-  // portion started mid-motif (the intermittent "pattern changes completely"
-  // bug when entering tile preview).
-  const PREVIEW_PX = Math.round(Math.min(W, H) * 0.70);
+  // In tile preview the scale slider drives previewZoom (a pure zoom multiplier)
+  // rather than state.gridSize, so the pattern repeat stays frozen.
+  // cellPx here is the ZOOMED cell size — only used for rendering, not saved.
+  const cellPx  = Math.max(1, Math.round(state.gridSize * previewZoom));
+  const motifPx = MOTIF_DIM * cellPx;       // one full repeat in zoomed pixels
+  const REPEAT  = 3;
+  const totalPx = REPEAT * motifPx;         // 3×3 block size in zoomed pixels
 
   const { palette, motif } = _currentMotif();
 
@@ -704,53 +707,46 @@ function renderPreviewRepeat() {
   ctx.fillStyle = '#1a1a1f';
   ctx.fillRect(0, 0, cW, cH);
 
-  // Center the fixed preview square in the padded canvas.
-  const startX = Math.round((cW - PREVIEW_PX) / 2);
-  const startY = Math.round((cH - PREVIEW_PX) / 2);
+  // Center the 3×3 block in the padded canvas. clip() ensures it never
+  // overflows on narrow screens even at high zoom.
+  const startX = Math.round((cW - totalPx) / 2);
+  const startY = Math.round((cH - totalPx) / 2);
 
-  // Always clip to the preview area — tiles never overflow regardless of scale.
   ctx.save();
   ctx.beginPath();
-  ctx.rect(startX, startY, PREVIEW_PX, PREVIEW_PX);
+  ctx.rect(startX, startY, totalPx, totalPx);
   ctx.clip();
 
   if (state.tileShape === 'hexagon') {
     ctx.translate(startX, startY);
-    // overdraw=true: hex rows/cols are ceil+1 so the fixed area is always filled.
-    _renderHexagons(ctx, motif, palette, cellPx, PREVIEW_PX, PREVIEW_PX, dpr, true);
+    _renderHexagons(ctx, motif, palette, cellPx, totalPx, totalPx, dpr, false);
   } else {
-    // Enough full motifs to fill PREVIEW_PX, plus 1 for right/bottom edge overdraw.
-    const motifsN    = Math.ceil(PREVIEW_PX / motifPx) + 1;
-    const totalCells = motifsN * MOTIF_DIM;
     _renderSquareCells(ctx, motif, palette, cellPx,
-      totalCells, totalCells, dpr, startX, startY);
+      REPEAT * MOTIF_DIM, REPEAT * MOTIF_DIM, dpr, startX, startY);
   }
 
-  ctx.restore();  // removes both the clip and any translate
+  ctx.restore();
 
-  // Guide lines at every motif boundary inside the preview area.
-  // At large scale (few motifs visible) only 1–2 lines appear; at small scale
-  // (many motifs) more lines appear — both correctly show where seams are.
+  // Seam guide lines at every motif boundary — always exactly 2 per axis
+  // since the block is always 3×3.
   if (state.previewGrid) {
     ctx.strokeStyle = 'rgba(255, 49, 49, 0.95)';
     ctx.lineWidth   = 1.5;
-    for (let x = motifPx; x < PREVIEW_PX; x += motifPx) {
-      const px = Math.round(startX + x) + 0.5;
+    for (let i = 1; i < REPEAT; i++) {
+      const px = Math.round(startX + i * motifPx) + 0.5;
+      const py = Math.round(startY + i * motifPx) + 0.5;
       ctx.beginPath();
       ctx.moveTo(px, startY);
-      ctx.lineTo(px, startY + PREVIEW_PX);
+      ctx.lineTo(px, startY + totalPx);
       ctx.stroke();
-    }
-    for (let y = motifPx; y < PREVIEW_PX; y += motifPx) {
-      const py = Math.round(startY + y) + 0.5;
       ctx.beginPath();
       ctx.moveTo(startX, py);
-      ctx.lineTo(startX + PREVIEW_PX, py);
+      ctx.lineTo(startX + totalPx, py);
       ctx.stroke();
     }
     // Outer border
     ctx.lineWidth = 2;
-    ctx.strokeRect(startX + 0.5, startY + 0.5, PREVIEW_PX - 1, PREVIEW_PX - 1);
+    ctx.strokeRect(startX + 0.5, startY + 0.5, totalPx - 1, totalPx - 1);
   }
 }
 
@@ -1306,11 +1302,38 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
   window.addEventListener('pointercancel', onUp);
 }
 
-// ---------- Grid size slider (live preview) ----------
+// Sync the scale label to whatever mode is active.
+function syncGridLabel() {
+  if (state.previewRepeat) {
+    gridLabel.textContent = `${Math.round(previewZoom * 100)}% zoom`;
+  } else {
+    gridLabel.textContent = `${state.gridSize} px/cell`;
+  }
+}
+
+// ---------- Grid size slider ----------
+// Normal mode: changes state.gridSize (pattern repeat size, px/cell).
+// Tile preview mode: changes previewZoom only — the pattern repeat is frozen,
+// the slider acts as a zoom on the fixed 3×3 swatch.
+// Zoom range: slider value 4 → 0.25× (far away, small tiles),
+//             slider value 14 → 1× (1:1, normal size),
+//             slider value 24 → 2× (close-up, large tiles).
+function _sliderToZoom(v) {
+  // Map [SCALE_MIN, SCALE_MAX] → [0.25, 2] with 1× at the midpoint (14).
+  return 0.25 * Math.pow(8, (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN));
+}
 gridSizeEl.addEventListener('input', e => {
-  state.gridSize = parseInt(e.target.value, 10);
-  gridLabel.textContent = `${state.gridSize} px/cell`;
-  updateThumb(state.gridSize);
+  const v = parseInt(e.target.value, 10);
+  if (state.previewRepeat) {
+    previewZoom = _sliderToZoom(v);
+    const pct = Math.round(previewZoom * 100);
+    gridLabel.textContent = `${pct}% zoom`;
+    updateThumb(v);
+  } else {
+    state.gridSize = v;
+    syncGridLabel();
+    updateThumb(state.gridSize);
+  }
   generate();
 });
 // Grabbing cursor while dragging the slider
@@ -1421,8 +1444,8 @@ function randomizeAll() {
   }
   state.seed = randomSeed();
   // Sync UI to new state
-  gridSizeEl.value      = String(state.gridSize);
-  gridLabel.textContent = `${state.gridSize} px/cell`;
+  gridSizeEl.value = String(state.gridSize);
+  syncGridLabel();
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1482,6 +1505,14 @@ function applyPreviewToggleUI() {
 if (previewToggleBtn) {
   previewToggleBtn.addEventListener('click', () => {
     state.previewRepeat = !state.previewRepeat;
+    // Reset zoom to 1× and restore the slider to the actual gridSize position
+    // so the slider thumb and label always reflect what they control.
+    previewZoom = 1;
+    gridSizeEl.value      = String(state.gridSize);
+    gridLabel.textContent = state.previewRepeat
+      ? `${Math.round(previewZoom * 100)}% zoom`
+      : `${state.gridSize} px/cell`;
+    updateThumb(state.gridSize);
     applyPreviewToggleUI();
     generate();
   });
@@ -1717,8 +1748,8 @@ function loadConfig(cfg) {
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
   state.colors    = colors;
 
-  gridSizeEl.value      = String(state.gridSize);
-  gridLabel.textContent = `${state.gridSize} px/cell`;
+  gridSizeEl.value = String(state.gridSize);
+  syncGridLabel();
   updateThumb(state.gridSize);
   renderSwatches();
   buildTileShapeList();
@@ -1810,8 +1841,8 @@ if (typeof ResizeObserver !== 'undefined') {
 // ---------- Init ----------
 loadSaves();
 
-gridSizeEl.value      = String(state.gridSize);
-gridLabel.textContent = `${state.gridSize} px/cell`;
+gridSizeEl.value = String(state.gridSize);
+syncGridLabel();
 
 renderSwatches();
 buildTileShapeList();
