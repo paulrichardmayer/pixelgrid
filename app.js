@@ -166,8 +166,12 @@ const SCALE_MAX  = 24;
 
 function updateThumb(value) {
   if (!sliderThumb || !sliderTrack) return;
-  const v   = Math.max(SCALE_MIN, Math.min(SCALE_MAX, value));
-  const pct = (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN);
+  // Read the slider's live min/max so the thumb is correct in BOTH modes:
+  // normal (4–24 px/cell) and tile preview (25–200 % zoom).
+  let lo = parseFloat(gridSizeEl.min); if (!Number.isFinite(lo)) lo = SCALE_MIN;
+  let hi = parseFloat(gridSizeEl.max); if (!Number.isFinite(hi)) hi = SCALE_MAX;
+  const v   = Math.max(lo, Math.min(hi, value));
+  const pct = (v - lo) / (hi - lo);
   const size = Math.round(THUMB_MIN + (THUMB_MAX - THUMB_MIN) * pct);
   const trackW = sliderTrack.clientWidth;
   const center = size / 2 + pct * (trackW - size);
@@ -1049,7 +1053,7 @@ function openPanel() {
   syncSavedVisibility();
   // Defer until layout settles so width measurements are correct
   requestAnimationFrame(() => {
-    updateThumb(state.gridSize);
+    applySliderForMode();
     repositionSavedPatterns();
   });
 }
@@ -1302,36 +1306,47 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
   window.addEventListener('pointercancel', onUp);
 }
 
-// Sync the scale label to whatever mode is active.
-function syncGridLabel() {
+// Tile-preview zoom range — clean even steps so the slider snaps to round
+// percentages (25, 50, 75, … 200) instead of the old exponential mapping
+// that produced values like 107 % or 116 %.
+const ZOOM_MIN = 25, ZOOM_MAX = 200, ZOOM_STEP = 25;   // percent
+
+// Single source of truth for the scale slider. Configures the slider's
+// range/step/value plus the label and thumb for whichever mode is active:
+//   normal  → 4–24, step 1, label "N px/cell"
+//   preview → 25–200, step 25, label "N%" (drives previewZoom, repeat frozen)
+function applySliderForMode() {
   if (state.previewRepeat) {
-    gridLabel.textContent = `${Math.round(previewZoom * 100)}% zoom`;
+    gridSizeEl.min  = String(ZOOM_MIN);
+    gridSizeEl.max  = String(ZOOM_MAX);
+    gridSizeEl.step = String(ZOOM_STEP);
+    const z = Math.round(previewZoom * 100);
+    gridSizeEl.value      = String(z);
+    gridLabel.textContent = `${z}%`;
+    updateThumb(z);
   } else {
+    gridSizeEl.min  = String(SCALE_MIN);
+    gridSizeEl.max  = String(SCALE_MAX);
+    gridSizeEl.step = '1';
+    gridSizeEl.value      = String(state.gridSize);
     gridLabel.textContent = `${state.gridSize} px/cell`;
+    updateThumb(state.gridSize);
   }
 }
 
 // ---------- Grid size slider ----------
-// Normal mode: changes state.gridSize (pattern repeat size, px/cell).
-// Tile preview mode: changes previewZoom only — the pattern repeat is frozen,
-// the slider acts as a zoom on the fixed 3×3 swatch.
-// Zoom range: slider value 4 → 0.25× (far away, small tiles),
-//             slider value 14 → 1× (1:1, normal size),
-//             slider value 24 → 2× (close-up, large tiles).
-function _sliderToZoom(v) {
-  // Map [SCALE_MIN, SCALE_MAX] → [0.25, 2] with 1× at the midpoint (14).
-  return 0.25 * Math.pow(8, (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN));
-}
+// Normal mode: slider value IS state.gridSize (px/cell).
+// Tile preview mode: slider value IS the zoom percent; previewZoom = v/100 and
+// the pattern repeat (state.gridSize) stays frozen.
 gridSizeEl.addEventListener('input', e => {
   const v = parseInt(e.target.value, 10);
   if (state.previewRepeat) {
-    previewZoom = _sliderToZoom(v);
-    const pct = Math.round(previewZoom * 100);
-    gridLabel.textContent = `${pct}% zoom`;
+    previewZoom = v / 100;
+    gridLabel.textContent = `${v}%`;
     updateThumb(v);
   } else {
     state.gridSize = v;
-    syncGridLabel();
+    gridLabel.textContent = `${state.gridSize} px/cell`;
     updateThumb(state.gridSize);
   }
   generate();
@@ -1444,9 +1459,7 @@ function randomizeAll() {
   }
   state.seed = randomSeed();
   // Sync UI to new state
-  gridSizeEl.value = String(state.gridSize);
-  syncGridLabel();
-  updateThumb(state.gridSize);
+  applySliderForMode();
   renderSwatches();
   buildTileShapeList();
   buildStyleList();
@@ -1505,14 +1518,10 @@ function applyPreviewToggleUI() {
 if (previewToggleBtn) {
   previewToggleBtn.addEventListener('click', () => {
     state.previewRepeat = !state.previewRepeat;
-    // Reset zoom to 1× and restore the slider to the actual gridSize position
-    // so the slider thumb and label always reflect what they control.
+    // Always reset to 100% zoom on enter/exit, then reconfigure the slider
+    // (range, step, value, label, thumb) for the new mode in one place.
     previewZoom = 1;
-    gridSizeEl.value      = String(state.gridSize);
-    gridLabel.textContent = state.previewRepeat
-      ? `${Math.round(previewZoom * 100)}% zoom`
-      : `${state.gridSize} px/cell`;
-    updateThumb(state.gridSize);
+    applySliderForMode();
     applyPreviewToggleUI();
     generate();
   });
@@ -1695,7 +1704,7 @@ document.addEventListener('keydown', e => {
 });
 
 window.addEventListener('resize', () => {
-  updateThumb(state.gridSize);
+  applySliderForMode();
   generate();
   repositionSavedPatterns();
 });
@@ -1748,9 +1757,7 @@ function loadConfig(cfg) {
   state.tileShape = SHAPE_NAMES.includes(cfg.tileShape) ? cfg.tileShape : 'square';
   state.colors    = colors;
 
-  gridSizeEl.value = String(state.gridSize);
-  syncGridLabel();
-  updateThumb(state.gridSize);
+  applySliderForMode();
   renderSwatches();
   buildTileShapeList();
   buildStyleList();
@@ -1841,8 +1848,7 @@ if (typeof ResizeObserver !== 'undefined') {
 // ---------- Init ----------
 loadSaves();
 
-gridSizeEl.value = String(state.gridSize);
-syncGridLabel();
+applySliderForMode();
 
 renderSwatches();
 buildTileShapeList();
