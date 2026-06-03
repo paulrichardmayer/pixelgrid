@@ -56,10 +56,12 @@ input[type="text"], .picker-hex {
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
+  /* No delay on the way out — leaving the element hides the tooltip at once. */
   transition: opacity 0.12s;
   z-index: 500;
 }
-[data-tooltip]:hover::after { opacity: 1; }
+/* 0.2s delay before the tooltip appears on hover (duration 0.12s, delay 0.2s). */
+[data-tooltip]:hover::after { opacity: 1; transition: opacity 0.12s 0.2s; }
 /* Hide tooltip while the user is holding or dragging */
 body.swatch-watching [data-tooltip]::after,
 body.swatch-dragging [data-tooltip]::after { opacity: 0 !important; }

@@ -1624,11 +1624,18 @@ document.addEventListener('keydown', e => {
     closePanel();
     return;
   }
-  const tag = document.activeElement?.tagName;
-  // BUTTON included so Space activates a focused panel button (e.g. "save")
-  // instead of being hijacked into a global randomize.
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+  const el  = document.activeElement;
+  const tag = el?.tagName;
+  // Typing in a field must never trigger shortcuts.
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  // Only Space conflicts with a focused control: <button> and role="button"
+  // elements activate on Space natively (and the role="button" toggles run
+  // their own Space handlers). So defer ONLY Space to them — letter shortcuts
+  // (c/g/s) have no native button behavior and must keep working even while a
+  // button holds focus (the lingering focus ring used to kill every hotkey).
+  const onButton = tag === 'BUTTON' || el?.getAttribute('role') === 'button';
   if (e.code === 'Space') {
+    if (onButton) return;            // let the focused control handle Space
     e.preventDefault();
     randomizeAll();
   } else if (e.key === 'c' || e.key === 'C') {
@@ -1716,7 +1723,13 @@ function makeThumbnail(size = 200) {
   off.width  = size; off.height = size;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-  octx.drawImage(source, 0, 0, size, size);
+  // Center-crop the largest square out of the (usually non-square) export
+  // canvas, then scale that square into the slot. This FILLS the square with
+  // no stretching — the long axis (typically width) is cropped instead.
+  const crop = Math.min(source.width, source.height);
+  const sx   = (source.width  - crop) / 2;
+  const sy   = (source.height - crop) / 2;
+  octx.drawImage(source, sx, sy, crop, crop, 0, 0, size, size);
   return off.toDataURL('image/png');
 }
 
