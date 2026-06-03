@@ -1309,7 +1309,7 @@ function _beginSwatchDrag(e, srcIdx, swEl) {
 // Tile-preview zoom range — clean even steps so the slider snaps to round
 // percentages (25, 50, 75, … 200) instead of the old exponential mapping
 // that produced values like 107 % or 116 %.
-const ZOOM_MIN = 25, ZOOM_MAX = 200, ZOOM_STEP = 25;   // percent
+const ZOOM_MIN = 25, ZOOM_MAX = 200, ZOOM_STEP = 5;    // percent
 
 // Single source of truth for the scale slider. Configures the slider's
 // range/step/value plus the label and thumb for whichever mode is active:
