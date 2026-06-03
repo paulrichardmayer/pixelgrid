@@ -60,8 +60,8 @@ input[type="text"], .picker-hex {
   transition: opacity 0.12s;
   z-index: 500;
 }
-/* 0.2s delay before the tooltip appears on hover (duration 0.12s, delay 0.2s). */
-[data-tooltip]:hover::after { opacity: 1; transition: opacity 0.12s 0.2s; }
+/* 0.6s delay before the tooltip appears on hover (duration 0.12s, delay 0.6s). */
+[data-tooltip]:hover::after { opacity: 1; transition: opacity 0.12s 0.6s; }
 /* Hide tooltip while the user is holding or dragging */
 body.swatch-watching [data-tooltip]::after,
 body.swatch-dragging [data-tooltip]::after { opacity: 0 !important; }
